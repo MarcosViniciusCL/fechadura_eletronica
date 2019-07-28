@@ -73,10 +73,23 @@ class WifiESP {
       EEPROM.get(34, password);
       Serial.println(ssid);
     }
-    void loop(){
+    void startAcessPoint(){
+      IPAddress staticIP(10, 0, 0, 2); // IP set to Static
+      IPAddress gateway(10, 0, 0, 1);// gateway set to Static
+      IPAddress subnet(255, 255, 255, 0);// subnet set to Static
+      const char * ssid = "ESP8266_FECHADURA";
+      const char * pass = "esp8266";
+      WiFi.softAP(ssid, pass, 2, 0);
+      WiFi.config(staticIP, gateway, subnet);
+    }
+    void stopAcessPoint(){
+      WiFi.mode(WIFI_STA);
+    }
+    bool loop(){
         if(WiFi.status() != WL_CONNECTED){
             connectWifi();
         }
+        return WiFi.status() == WL_CONNECTED;
     }
 };
 

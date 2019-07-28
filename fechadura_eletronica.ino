@@ -1,5 +1,6 @@
 #include <SPI.h>
 #include <ESP8266WiFi.h>
+#include <ESP8266WebServer.h>
 #include "WifiESP.h"
 //#include "MQTT.h"
 #include "RFID.h"
@@ -10,7 +11,7 @@
 #define RST_PIN D2
 
 #define VECTOR_SIZE_MAX 30
-String secure_card[VECTOR_SIZE_MAX];
+String secure_card[VECTOR_SIZE_MAX][2];
 int counter_master_card=0;
 int index_card=0;
 int _look=0;
@@ -30,9 +31,9 @@ bool __config_mode=false;                                   // Flag para entra n
 bool __status=false;                                        // Flag usada para habilitar a exibição de status
 bool __reset=false;                                         // Flag para um reset no microcontrolador
 
-bool __save_new_card=false;
+bool __save_new_card=false;                                 // Flag para habilitar função de adicionar novo cartão
 
-typedef struct m {
+typedef struct m {                                          // Estrutuda de dados para salvar as configurações do servidor mqtt  
   String server;
   String user;
   String password;
@@ -40,40 +41,40 @@ typedef struct m {
   String subTopic;
 } conf_mqtt; 
 
-WiFiClientSecure espClient;
+WiFiClient espClient;
 PubSubClient client(espClient);
 conf_mqtt mqtt;
 
-WifiESP *wifi;
-RFID *rfid;
+WifiESP *wifi;                                              // Objeto da classe que controla o Wifi
+RFID *rfid;                                                 // Objeto da classe que controla o leitor de RFID
 
 char state;                                                 // O estado que se encontra o microcontrolador
-int counter;
-int counter_mqtt;
+int counter;                                                // Contador usado para saber o numero de execuçao
+int counter_mqtt;                                           // Contador para conexão do mqtt
+int web_server_timer;
 
-os_timer_t tmr0;
-String tagAtual;
+os_timer_t tmr0;                                            // Intancia de time, controla a interrupção por time        
+String tagAtual;                                            // Salva a ultima tag rfid lida 
 
-
+ESP8266WebServer server(80);
 
 void setup(){
-  Serial.begin(115200);                                     //Configurando a velocidade da uart
-  SPI.begin();                                              //Iniciando a interface SPI para usar o RFID    
-  EEPROM.begin(4096);
-  int i = 0;
+  Serial.begin(115200);                                     // Configurando a velocidade da uart
+  SPI.begin();                                              // Iniciando a interface SPI para usar o RFID    
+  EEPROM.begin(4096);                                       // Iniciando o tamaho maximo da EEPROM
 
-  get_card();
-  rfid = new RFID();
-  rfid->init();
+  save_card();
+  //get_card();                                               // Carrega os cartões salvos na memoria.
+      
+  rfid = new RFID();                                        // Intancia a classe que controla o RFID
+  rfid->init();                                             // Inicia o controlador
   
-  wifi = new WifiESP(&state);                               //Criando objeto para controle do wifi
-  //wifi->loadMemory();
-  wifi->setSSID("Cavalo de Troia.exe");                                    //Configurando SSID
-  wifi->setPassword("@n3tworking");                         //Configurando senha
+  wifi = new WifiESP(&state);                               // Criando objeto para controle do wifi
+  wifi->setSSID("Cavalo de Troia.exe");                     // Configurando SSID
+  wifi->setPassword("@n3tworking");                         // Configurando senha
   WiFi.begin(wifi->getSSID(), wifi->getPassword());
   //wifi->saveMemory();
 
-  pinMode(LED_NOT_VERDE, OUTPUT);
   pinMode(RELE, OUTPUT);                                    // Informando que o pino do rele é uma saída
   pinMode(BUZZER, OUTPUT);
   digitalWrite(RELE, 1);                                    // Escrevendo nivel logico alto no pino do rele, o rele é acionado com nivel logico baixo
@@ -85,8 +86,7 @@ void setup(){
   mqtt.subTopic = "/galeria/portao/esp8266";
   client.setServer(mqtt.server.c_str(), mqtt.port);
   client.setCallback(callback);
-  //mqtt.saveMemory();
-  //mqtt.loadMemory();
+
   
   
   os_timer_setfn(&tmr0, interrupt_time, NULL);              //Indica ao Timer qual sera sua Sub rotina.
@@ -94,24 +94,27 @@ void setup(){
   counter = 0;
   counter_mqtt = 0;
   counter_master_card = 0;
+  web_server_timer=0;
   buzzer(1000, 2);
 }
 
 void connect_mqtt(){
-  const char* finderprint = "5e 5d c0 cd a9 6d 68 c1 09 a4 e3 96 27 b0 33 de c4 36 cf 5b";
-    if(WiFi.status() == WL_CONNECTED && counter_mqtt >= 1000) {
-        Serial.println("\nTentando conectar MQtt");
-        if (client.connect("ESP8266Client", mqtt.user.c_str(), mqtt.password.c_str())) {
-          Serial.println("\nConectado MQtt");
-          client.subscribe(mqtt.subTopic.c_str());
-        }
-        counter_mqtt = 0;
-    }
-    counter_mqtt++;
-    if(counter_mqtt > 1000) counter_mqtt = 0;
+  if(WiFi.status() == WL_CONNECTED && counter_mqtt >= 1000) {
+      Serial.println("\nTentando conectar MQtt");
+      if (client.connect("ESP8266Client", mqtt.user.c_str(), mqtt.password.c_str())) {
+        Serial.println("\nConectado MQtt");
+        client.subscribe(mqtt.subTopic.c_str());
+      }
+      counter_mqtt = 0;
+  }
+  counter_mqtt++;
+  if(counter_mqtt > 1000) counter_mqtt = 0;
 }
       
 
+/*
+ * Funcão executada quando chega uma nova mensagem via mqtt
+ */
 void callback(char* topic, byte* payload, unsigned int length) {
   Serial.print("Message arrived [");
   Serial.print(topic);
@@ -124,10 +127,11 @@ void callback(char* topic, byte* payload, unsigned int length) {
   // Switch on the LED if an 1 was received as first character
   if (msg.equals("1")) {
     acionarRele("mqtt");
-  } else if(msg.equals("add_new_card")){
-    add_new_card(false);
   } else if(msg.equals("add_new_card master")){
-    add_new_card(true);
+    add_new_card(true, "master");
+  } else if(msg.substring(0, msg.indexOf(" ")).equals("add_new_card")){
+    String s1 = msg.substring(msg.indexOf(" "));
+    add_new_card(false, s1);
   }
 }
 
@@ -160,11 +164,14 @@ void beepBuzzerErro(int delayMs){
   digitalWrite(BUZZER, 0);
 }
 
-
-void notificacao_led(){
+/**
+ * Função executada sempre quando uma interrupção, por tempo, é chamada
+ */
+void update_time(){
   counter += 1;
   if(counter%2 == 0){ // Acontece a cada 1 segundo
     _look > 0 ? _look-- : _look=0;
+    web_server_timer > 0 ? web_server_timer-- : web_server_timer=0;
   }
   if(counter >= 40){ // 20 Segundos
     counter_master_card = 0;
@@ -172,6 +179,9 @@ void notificacao_led(){
   }
 }
 
+/**
+ * Callback quando uma interrupção, por tempo, acontece
+ */
 void interrupt_time(void* z){
   if(!__config_mode){
     if(Serial.available() > 0){
@@ -190,17 +200,21 @@ void interrupt_time(void* z){
         __reset=true;
       }
     }
-    notificacao_led();
+    update_time();
   }
   
 }
 
+/**
+ * Limpa toda a EEPROM
+ */
 void clear_eeprom(){
   int i;
   printMsg("Limpando...");
   for(i = 0; i < 4096; i++){
     EEPROM.write(i, '\n');
     EEPROM.commit();  
+    printMsg((100*i)/4096+"%");
   }
   printMsg("Concluido.");
 }
@@ -213,9 +227,9 @@ String readSerial(){
   return c;
 }
 
-void reiniciar(){
+void restart_esp(){
   printMsg("Reiniciando...");
-  //resetEsp();
+  ESP.restart();
 }
 
 void config_all(){
@@ -316,43 +330,50 @@ void verif_conf(){
     status_all();
   }
   if(__reset){
-    reiniciar();
+    restart_esp();
   }
 }
 
 void acionarRele(String user){
-  client.publish((mqtt.subTopic + "/log").c_str(), ("Portão aberto por: " + user).c_str());
   beepBuzzer(50);
   digitalWrite(RELE, 0);
   delay(1000);
   digitalWrite(RELE, 1);
 }
 
-bool check_permition(String id){
+/*
+ * Verifica se o cartão inserido tem acesso
+ */
+int check_permition(String id){
    int i;
-   if(counter_master_card >= 5) {
-    add_new_card(false);            // Adiciona um novo cartão, não master.
-    return false;
+   if(counter_master_card >= 5) {   // Verifica se o cartão master foi inserido 5 vezes
+    counter_master_card=0;
+    mode_config();
+    add_new_card(false, "");            // Adiciona um novo cartão, não master.
+    return -1;
    }
    for(i = 0; i < VECTOR_SIZE_MAX; i++){
-    if(secure_card[i].equals(id)){
+    if(secure_card[i][0].equals(id)){  // Se o cartão tiver no vetor, retorna verdadeiro
       if(i == 0){ 
-        counter_master_card++;
+        counter_master_card++;      // Conta a quantidade de vezes que o master passou, para acionar o modo de adicionar um novo cartão
       }
-      return true; 
+      return i; 
     }
    }
-   return false;
+   return -1;
 }
 
-void add_new_card(bool master){
+/*
+ * Adiciona, ou remove, um cartão no bando de dados
+ */
+void add_new_card(bool master, String user){
   bool _add=true;
   printMsg("Adicinar/Remover cartão");
   buzzer(500, 3);
-  int time_out=0;
+  int time_out=0;                         // Tempo para aguardar enquanto não for inserido um novo cartão, se passar cancela a operação.
   int i=0;
   do {
-    tagAtual = rfid->loop();
+    tagAtual = rfid->loop();              // Pega o cartão aproximado
     time_out++;
     if(time_out >= 40){
       buzzer(100, 3);
@@ -361,28 +382,37 @@ void add_new_card(bool master){
     }
     delay(250);  
   } while(tagAtual.equals(""));
-  if(master){                         // Se master for true ele adiciona um novo master card
-    secure_card[i] = tagAtual;
+  if(master){                                                                         // Se master for true, ele adiciona um novo master card
+    secure_card[0][0] = tagAtual;
+    if(user != NULL && !user.equals("")){
+      secure_card[0][1] = user;
+    } else {
+      secure_card[0][1] = "";
+    }
   } else {
-    for(i=0; i<VECTOR_SIZE_MAX; i++){
-      if(secure_card[i].equals(tagAtual) && !secure_card[0].equals(tagAtual)){
+    for(i=0; i<VECTOR_SIZE_MAX; i++){                                                 // Verifica se o cartão ja existe
+      if(secure_card[i][0].equals(tagAtual) && !secure_card[0][0].equals(tagAtual)){  // Caso o cartão exista e for diferente do master atual, o cartão é removido
         printMsg("Ja existe esse cartão, removendo...");
-        secure_card[i] = "";
-        _add=false;
+        secure_card[i][0] = "";
+        _add=false;                                                                   // Se um cartão for removido, não adiciona um novo abaixo 
       }
     }
-    for (i=0; i<VECTOR_SIZE_MAX; i++){
-      if(secure_card[i].equals("")){
+    for (i=0; i<VECTOR_SIZE_MAX; i++){                                                // Verifica onde tem um espaço vazio para colocar um novo cartão
+      if(secure_card[i][0].equals("")){
         index_card = i;
         break;
       }
     }
-    if(_add){
-      secure_card[index_card] = tagAtual;
+    if(_add){                                                                         // Se _add tive habilitado, um novo cartão é adicionado.
+      secure_card[index_card][0] = tagAtual;
+      if(user != NULL && !user.equals("")){
+        secure_card[index_card][1] = user;
+      } else {
+        secure_card[index_card][1] = "";
+      }
       printMsg("Um novo cartão adicionado: " + tagAtual);
     }
   }
-  counter_master_card=0;
   buzzer(800, 1);
   save_card();
 }
@@ -395,11 +425,15 @@ void save_card(){
   EEPROM.commit();
 }
 void loop(){
-    wifi->loop();
-    if(_look == 0){
-      tagAtual = rfid->loop();
+    if(!wifi->loop() && web_server_timer == 0){               // Verifica se o wifi ainda permanece conectado
+      mode_config();                                           // Se não for possivel encotrar uma rede wifi, habilitar modo configuração ligando o AP
+    }
+    if(_look == 0){                                           // Se não tiver bloqueado entra na condição
+      tagAtual = rfid->loop();                                // Lê a tag rfid
       if(!tagAtual.equals("")){
-        if(check_permition(tagAtual)){
+        int r = check_permition(tagAtual);                               
+        if(r != -1){                        // Verifica se tem acesso no sistema
+          printMsg("Portão aberto por: "+ secure_card[r][1] +" tag:"+ secure_card[r][0]);
           acionarRele(tagAtual);
           _try=0;
         } else {
@@ -414,14 +448,30 @@ void loop(){
         }
       }
     }
-    if (!client.connected()) {
+    if (!client.connected()) {                                // Verifica se o cliente mqtt ainda esta conectado
       connect_mqtt();
     }
     client.loop();
-    verif_conf();
+    server.handleClient();
+    if(web_server_timer == 0 && WiFi.getMode() == WIFI_AP_STA){
+      end_mode_config();
+      printMsg("Servidor web parado");
+    }
+    verif_conf();                                             // Verifica o estado de algumas configurações
 }
 
 void printMsg(String s){
   Serial.println(s);
   client.publish((mqtt.subTopic + "/log").c_str(), s.c_str());
+}
+void mode_config(){
+  printMsg("Modo configuração habilitado");
+  web_server_timer = 45; //900; // 15 min
+  WiFi.softAP("FECHADURA", "87654321");
+  server.begin();
+}
+void end_mode_config(){
+  server.close();
+  server.stop();
+  WiFi.mode(WIFI_STA);
 }
