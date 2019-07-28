@@ -40,7 +40,7 @@ typedef struct m {
   String subTopic;
 } conf_mqtt; 
 
-WiFiClient espClient;
+WiFiClientSecure espClient;
 PubSubClient client(espClient);
 conf_mqtt mqtt;
 
@@ -59,15 +59,16 @@ String tagAtual;
 void setup(){
   Serial.begin(115200);                                     //Configurando a velocidade da uart
   SPI.begin();                                              //Iniciando a interface SPI para usar o RFID    
-  //EEPROM.begin(32);
+  EEPROM.begin(4096);
+  int i = 0;
 
-  secure_card[0] = "146191131";
+  get_card();
   rfid = new RFID();
   rfid->init();
   
   wifi = new WifiESP(&state);                               //Criando objeto para controle do wifi
   //wifi->loadMemory();
-  wifi->setSSID("NOTE");                                    //Configurando SSID
+  wifi->setSSID("Cavalo de Troia.exe");                                    //Configurando SSID
   wifi->setPassword("@n3tworking");                         //Configurando senha
   WiFi.begin(wifi->getSSID(), wifi->getPassword());
   //wifi->saveMemory();
@@ -97,6 +98,7 @@ void setup(){
 }
 
 void connect_mqtt(){
+  const char* finderprint = "5e 5d c0 cd a9 6d 68 c1 09 a4 e3 96 27 b0 33 de c4 36 cf 5b";
     if(WiFi.status() == WL_CONNECTED && counter_mqtt >= 1000) {
         Serial.println("\nTentando conectar MQtt");
         if (client.connect("ESP8266Client", mqtt.user.c_str(), mqtt.password.c_str())) {
@@ -191,6 +193,16 @@ void interrupt_time(void* z){
     notificacao_led();
   }
   
+}
+
+void clear_eeprom(){
+  int i;
+  printMsg("Limpando...");
+  for(i = 0; i < 4096; i++){
+    EEPROM.write(i, '\n');
+    EEPROM.commit();  
+  }
+  printMsg("Concluido.");
 }
 
 String readSerial(){
@@ -372,8 +384,16 @@ void add_new_card(bool master){
   }
   counter_master_card=0;
   buzzer(800, 1);
+  save_card();
 }
 
+void get_card(){
+  EEPROM.get(0, secure_card);
+}
+void save_card(){
+  EEPROM.put(0, secure_card);
+  EEPROM.commit();
+}
 void loop(){
     wifi->loop();
     if(_look == 0){
