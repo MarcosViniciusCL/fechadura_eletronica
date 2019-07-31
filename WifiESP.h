@@ -87,6 +87,7 @@ class WifiESP {
     }
     bool loop(){
         if(WiFi.status() != WL_CONNECTED){
+            Serial.println("Tentando conectar wifi");
             connectWifi();
         }
         return WiFi.status() == WL_CONNECTED;

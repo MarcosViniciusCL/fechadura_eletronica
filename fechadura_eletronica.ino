@@ -6,6 +6,9 @@
 #include "RFID.h"
 #include <EEPROM.h>
 #include <PubSubClient.h>
+#include <StringSplitter.h>
+#include <NTPClient.h>
+#include <WiFiUdp.h>
 
 #define SS_PIN D4
 #define RST_PIN D2
@@ -56,15 +59,19 @@ int web_server_timer;
 os_timer_t tmr0;                                            // Intancia de time, controla a interrupção por time        
 String tagAtual;                                            // Salva a ultima tag rfid lida 
 
+WiFiUDP ntpUDP;
+NTPClient timeClient(ntpUDP, "a.st1.ntp.br", -3 * 3600, 60000);
+
 ESP8266WebServer server(80);
 
 void setup(){
   Serial.begin(115200);                                     // Configurando a velocidade da uart
+  Serial.setTimeout(150);
   SPI.begin();                                              // Iniciando a interface SPI para usar o RFID    
   EEPROM.begin(4096);                                       // Iniciando o tamaho maximo da EEPROM
 
-  save_card();
-  //get_card();                                               // Carrega os cartões salvos na memoria.
+  //save_card();
+  get_card();                                               // Carrega os cartões salvos na memoria.
       
   rfid = new RFID();                                        // Intancia a classe que controla o RFID
   rfid->init();                                             // Inicia o controlador
@@ -87,7 +94,7 @@ void setup(){
   client.setServer(mqtt.server.c_str(), mqtt.port);
   client.setCallback(callback);
 
-  
+  timeClient.begin();
   
   os_timer_setfn(&tmr0, interrupt_time, NULL);              //Indica ao Timer qual sera sua Sub rotina.
   os_timer_arm(&tmr0, 500, true);                           //Indica ao Timer seu Tempo em ms e se será repetido (loop = true)
@@ -123,51 +130,49 @@ void callback(char* topic, byte* payload, unsigned int length) {
   for (int i = 0; i < length; i++) {
     msg += (char)payload[i];
   }
+  check_command(msg);
+}
 
-  // Switch on the LED if an 1 was received as first character
-  if (msg.equals("1")) {
-    acionarRele("mqtt");
-  } else if(msg.equals("add_new_card master")){
-    add_new_card(true, "master");
-  } else if(msg.substring(0, msg.indexOf(" ")).equals("add_new_card")){
-    String s1 = msg.substring(msg.indexOf(" "));
-    add_new_card(false, s1);
+void check_command(String msg){
+  if(!msg.equals("")){
+    StringSplitter *split;
+    if (msg.equals("1")) {
+      acionarRele("mqtt");
+    } else if(msg.equals("add_new_card master")){
+      add_new_card(true, "master");
+    } else if(msg.substring(0, msg.indexOf(" ")).equals("add_new_card")){
+      String s1 = msg.substring(msg.indexOf(" "));
+      add_new_card(false, s1);
+    } else if(msg.substring(0, msg.indexOf(" ")).equals("change_wifi")){
+      msg.replace("change_wifi", "");
+      split = new StringSplitter(msg, ',', 2);
+      String ssid = split->getItemAtIndex(0);
+      Serial.println(ssid);
+      ssid.trim();
+      String pass = split->getItemAtIndex(1);
+      pass.trim();
+      Serial.println(pass);
+      change_wifi(ssid, pass);
+    } else if(msg.substring(0, msg.indexOf(" ")).equals("list_user")){
+      list_user();
+    } else if(msg.substring(0, msg.indexOf(" ")).equals("remove_user")){
+      split = new StringSplitter(msg, ' ', 2);
+      String tag = split->getItemAtIndex(1);
+      tag.trim();
+      remove_user(tag);
+    } else if(msg.substring(0, msg.indexOf(" ")).equals("reset")){
+      restart_esp();
+    }
   }
 }
 
-void beepBuzzer(int delayMs){
-  digitalWrite(BUZZER, 1);
-  delay(delayMs);
-  digitalWrite(BUZZER, 0);
-}
 
-void buzzer(int delay_t, int co_unt){
-  int i = 0;
-  for(i = 0; i < co_unt; i++){
-    delay(delay_t);
-    digitalWrite(BUZZER, !digitalRead(BUZZER));
-  }
-  digitalWrite(BUZZER, 0);
-}
 
-void beepBuzzerErro(int delayMs){
-  digitalWrite(BUZZER, 1);
-  delay(delayMs);
-  digitalWrite(BUZZER, 0);
-  delay(delayMs);
-  digitalWrite(BUZZER, 1);
-  delay(delayMs);
-  digitalWrite(BUZZER, 0);
-  delay(delayMs);
-  digitalWrite(BUZZER, 1);
-  delay(delayMs);
-  digitalWrite(BUZZER, 0);
-}
 
 /**
- * Função executada sempre quando uma interrupção, por tempo, é chamada
+ * Callback quando uma interrupção, por tempo, acontece
  */
-void update_time(){
+void interrupt_time(void* z){
   counter += 1;
   if(counter%2 == 0){ // Acontece a cada 1 segundo
     _look > 0 ? _look-- : _look=0;
@@ -177,31 +182,21 @@ void update_time(){
     counter_master_card = 0;
     counter = 0;
   }
-}
-
-/**
- * Callback quando uma interrupção, por tempo, acontece
- */
-void interrupt_time(void* z){
-  if(!__config_mode){
-    if(Serial.available() > 0){
-      String c = "";
-      while(Serial.available() > 0) c.concat((char)Serial.read());
-      if(c.equals("config\r\n")){
-        __config_mode=true;
-      }
-      if(c.equals("state\r\n")){
-        Serial.println((int)state);
-      }
-      if(c.equals("status\r\n")){
-        __status=true;
-      }
-      if(c.equals("reset\r\n")){
-        __reset=true;
-      }
-    }
-    update_time();
-  }
+//  if(!__config_mode){
+//    if(Serial.available() > 0){
+//      String c = "";
+//      while(Serial.available() > 0) c.concat((char)Serial.read());
+//      if(c.equals("state\r\n")){
+//        Serial.println((int)state);
+//      }
+//      if(c.equals("status\r\n")){
+//        __status=true;
+//      }
+//      if(c.equals("reset\r\n")){
+//        __reset=true;
+//      }
+//    }
+//  }
   
 }
 
@@ -227,83 +222,21 @@ String readSerial(){
   return c;
 }
 
-void restart_esp(){
-  printMsg("Reiniciando...");
-  ESP.restart();
-}
-
-void config_all(){
+String readSerialNoLook(){
   String c;
-  Serial.println("\n\n************************************************************");
-  Serial.println("******************* MODO CONFIGURAÇÃO **********************");
-  Serial.println("******* OBS: SISTEMA FICA PARADO NO MODO CONFIG ************");
-  Serial.println("DIGITE UMA DAS OPÇÕES");
-  Serial.println("\nwifi: Entrar nas configurações do wifi");
-  Serial.println("mqtt: Entrar nas configurações do serviço MQTT");
-  c = readSerial();
-  if(c.equals("wifi")){
-    config_wifi();
+  if(Serial.available() <= 0){
+    while(Serial.available() <= 0){
+      c += (char) Serial.read();
+    }
+    c.remove(c.length()-2, 2);
+    return c;
   }
-  if(c.equals("mqtt")){
-    config_mqtt();
-  }
-  __config_mode=false;
+  return "";
 }
 
-void config_wifi(){
-  Serial.print("\nWIFI CONFIG\n");
-  Serial.print("SSID: " + String(wifi->getSSID()));
-  Serial.print("\nPASSWORD: " + String(wifi->getPassword()));
-  Serial.print("\nA - Alterar configurações\n");
-  Serial.print("S - Sair\n");
-  if(readSerial().equals("A")){
-    Serial.print("Digite as opções\n");
-    Serial.print("SSID: ");
-    wifi->setSSID(readSerial());
-    Serial.print(wifi->getSSID());
-    Serial.print("\nPASSWORD: ");
-    wifi->setPassword(readSerial());
-    Serial.print(wifi->getPassword());
-    Serial.print("\n\nConfigurações salvas!\n");
-    wifi->desconectar();
-    wifi->saveMemory();
-    //saveConfigWifi(); //Tem que desconectar e conectar novamente no wifi
-  }
-}
-void config_mqtt(){
-  Serial.print("\nMQTT CONFIG\n");
-  Serial.print("SERVER: " + String(mqtt.server));
-  Serial.print("\nPORT: " + String(mqtt.port));
-  Serial.print("\nUSER: " + String(mqtt.user));
-  Serial.print("\nPASSWORD: " + String(mqtt.password));
-  Serial.print("\nA - Alterar configurações\n");
-  Serial.print("S - Sair\n");
-  if(readSerial().equals("A")){
-    Serial.print("Digite as opções\n");
-    Serial.print("\nSERVER: ");
-    mqtt.server = readSerial();
-    Serial.print(mqtt.server);
-
-    Serial.print("\nPORT: ");
-    mqtt.port = readSerial().toInt();
-    Serial.print(mqtt.port);
-    
-    Serial.print("\nUSER: ");
-    mqtt.user = readSerial();
-    Serial.print(mqtt.user);
-    
-    Serial.print("\nPASSWORD: ");
-    mqtt.password = readSerial();
-    Serial.print(mqtt.password);
-
-    Serial.print("\nTOPIC: ");
-    mqtt.subTopic = readSerial();
-    Serial.print(mqtt.subTopic);
-    
-    Serial.print("\n\nConfigurações salvas!\n");
-    //saveConfigMqtt();
-    //conecte_broker(); //Disconectar broker e conectar novamente
-  } 
+void restart_esp(){
+  printMsg("Reiniciando sistema...");
+  ESP.restart();
 }
 
 void status_all(){
@@ -314,7 +247,6 @@ void status_all(){
   client.connected() ? Serial.print("CONECTADO\n") : Serial.print("DESCONECTADO\n");
   Serial.print("\nAcess Point: "); 
   Serial.print(wifi->getSSID());
-  Serial.print(wifi->getStatus());
   __status=false;
 }
 
@@ -323,9 +255,6 @@ void verif_conf(){
 //    wifi->connectWifi();
 //  }
   
-  if(__config_mode){
-    config_all();
-  }
   if(__status){
     status_all();
   }
@@ -335,6 +264,7 @@ void verif_conf(){
 }
 
 void acionarRele(String user){
+  printMsg("Aberto por " +user);
   beepBuzzer(50);
   digitalWrite(RELE, 0);
   delay(1000);
@@ -393,11 +323,11 @@ void add_new_card(bool master, String user){
     for(i=0; i<VECTOR_SIZE_MAX; i++){                                                 // Verifica se o cartão ja existe
       if(secure_card[i][0].equals(tagAtual) && !secure_card[0][0].equals(tagAtual)){  // Caso o cartão exista e for diferente do master atual, o cartão é removido
         printMsg("Ja existe esse cartão, removendo...");
-        secure_card[i][0] = "";
+        remove_user(tagAtual);
         _add=false;                                                                   // Se um cartão for removido, não adiciona um novo abaixo 
       }
     }
-    for (i=0; i<VECTOR_SIZE_MAX; i++){                                                // Verifica onde tem um espaço vazio para colocar um novo cartão
+    for (i=1; i<VECTOR_SIZE_MAX; i++){                                                // Verifica onde tem um espaço vazio para colocar um novo cartão, ignorando o primeiro
       if(secure_card[i][0].equals("")){
         index_card = i;
         break;
@@ -417,6 +347,34 @@ void add_new_card(bool master, String user){
   save_card();
 }
 
+void change_wifi(String ssid, String pass){
+  wifi->setSSID(ssid);
+  wifi->setPassword(pass);
+  wifi->desconectar();  
+}
+
+void list_user(){
+  String r = "";
+  int i;
+  for(i=0; i < VECTOR_SIZE_MAX; i++){
+    r += "USER: " + secure_card[i][1] + " TAG: " + secure_card[i][0] + "\n";
+  }
+  printMsg(r);
+}
+
+void remove_user(String tag){
+  int i;
+  for(i=0; i < VECTOR_SIZE_MAX; i++){
+    if(secure_card[i][0].equals(tag)){
+      secure_card[i][0] = "";
+      secure_card[i][1] = "";
+      printMsg("Usuário tag \'" + tag + "\' removido");
+      return;
+    }
+  }
+  save_card();
+}
+
 void get_card(){
   EEPROM.get(0, secure_card);
 }
@@ -433,7 +391,7 @@ void loop(){
       if(!tagAtual.equals("")){
         int r = check_permition(tagAtual);                               
         if(r != -1){                        // Verifica se tem acesso no sistema
-          printMsg("Portão aberto por: "+ secure_card[r][1] +" tag:"+ secure_card[r][0]);
+          printMsg("Portão aberto por: "+ secure_card[r][1] +" "+ secure_card[r][0]);
           acionarRele(tagAtual);
           _try=0;
         } else {
@@ -451,18 +409,24 @@ void loop(){
     if (!client.connected()) {                                // Verifica se o cliente mqtt ainda esta conectado
       connect_mqtt();
     }
+    timeClient.update();
     client.loop();
     server.handleClient();
     if(web_server_timer == 0 && WiFi.getMode() == WIFI_AP_STA){
       end_mode_config();
       printMsg("Servidor web parado");
     }
+    //check_command(readSerialNoLook());
     verif_conf();                                             // Verifica o estado de algumas configurações
 }
 
 void printMsg(String s){
-  Serial.println(s);
-  client.publish((mqtt.subTopic + "/log").c_str(), s.c_str());
+  String time_c = "";
+  if(WiFi.status() == WL_CONNECTED){
+    time_c = timeClient.getDayInText()+", "+ timeClient.getFormattedTime();
+  }
+  Serial.println(time_c +" - "+ s);
+  client.publish((mqtt.subTopic + "/log").c_str(),(time_c +" - "+ s).c_str());
 }
 void mode_config(){
   printMsg("Modo configuração habilitado");
@@ -474,4 +438,36 @@ void end_mode_config(){
   server.close();
   server.stop();
   WiFi.mode(WIFI_STA);
+}
+
+
+// ################################################# BUZZER ############################################
+
+void beepBuzzer(int delayMs){
+  digitalWrite(BUZZER, 1);
+  delay(delayMs);
+  digitalWrite(BUZZER, 0);
+}
+
+void buzzer(int delay_t, int co_unt){
+  int i = 0;
+  for(i = 0; i < co_unt; i++){
+    delay(delay_t);
+    digitalWrite(BUZZER, !digitalRead(BUZZER));
+  }
+  digitalWrite(BUZZER, 0);
+}
+
+void beepBuzzerErro(int delayMs){
+  digitalWrite(BUZZER, 1);
+  delay(delayMs);
+  digitalWrite(BUZZER, 0);
+  delay(delayMs);
+  digitalWrite(BUZZER, 1);
+  delay(delayMs);
+  digitalWrite(BUZZER, 0);
+  delay(delayMs);
+  digitalWrite(BUZZER, 1);
+  delay(delayMs);
+  digitalWrite(BUZZER, 0);
 }
