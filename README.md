@@ -8,7 +8,7 @@
           no sistema. Caso um ja exista um cartão com
           o mesmo código, será apagado.
     
-    add_new_user [<name> | master]
+    add_new_user [<name> | master]?
     
     Parâmetros:
     <name> - Nome do novo usuario que será adicionado
