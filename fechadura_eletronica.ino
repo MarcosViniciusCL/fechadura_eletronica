@@ -33,6 +33,7 @@ int _try=0;
 bool __config_mode=false;                                   // Flag para entra no modo de configuração
 bool __status=false;                                        // Flag usada para habilitar a exibição de status
 bool __reset=false;                                         // Flag para um reset no microcontrolador
+bool __only_master=false;
 
 bool __save_new_card=false;                                 // Flag para habilitar função de adicionar novo cartão
 
@@ -135,14 +136,16 @@ void callback(char* topic, byte* payload, unsigned int length) {
 
 void check_command(String msg){
   if(!msg.equals("")){
+    msg.trim();
     StringSplitter *split;
-    if (msg.equals("1")) {
+    if (msg.equals("open_door")) {
       acionarRele("mqtt");
-    } else if(msg.equals("add_new_card master")){
-      add_new_card(true, "master");
-    } else if(msg.substring(0, msg.indexOf(" ")).equals("add_new_card")){
+    } else if(msg.equals("add_new_user master")){
+      add_new_user(true, "master");
+    } else if(msg.substring(0, msg.indexOf(" ")).equals("add_new_user")){
       String s1 = msg.substring(msg.indexOf(" "));
-      add_new_card(false, s1);
+      s1.trim(); s1.toUpperCase();
+      add_new_user(false, s1);
     } else if(msg.substring(0, msg.indexOf(" ")).equals("change_wifi")){
       msg.replace("change_wifi", "");
       split = new StringSplitter(msg, ',', 2);
@@ -160,8 +163,14 @@ void check_command(String msg){
       String tag = split->getItemAtIndex(1);
       tag.trim();
       remove_user(tag);
+    } else if(msg.substring(0, msg.indexOf(" ")).equals("only_master")){
+      String s1 = msg.substring(msg.indexOf(" "));
+      s1.trim();
+      s1.equals("enable") ? __only_master=true : __only_master=false;
     } else if(msg.substring(0, msg.indexOf(" ")).equals("reset")){
       restart_esp();
+    } else{
+      printMsg("Erro command [cmd: " + msg + "]");
     }
   }
 }
@@ -222,13 +231,10 @@ String readSerial(){
   return c;
 }
 
-String readSerialNoLook(){
+String readSerialNoLock(){
   String c;
-  if(Serial.available() <= 0){
-    while(Serial.available() <= 0){
-      c += (char) Serial.read();
-    }
-    c.remove(c.length()-2, 2);
+  if(Serial.available() > 0){
+    c = Serial.readString();
     return c;
   }
   return "";
@@ -264,7 +270,7 @@ void verif_conf(){
 }
 
 void acionarRele(String user){
-  printMsg("Aberto por " +user);
+  printMsg("Portão aberto por: "+ user +", "+ tagAtual);
   beepBuzzer(50);
   digitalWrite(RELE, 0);
   delay(1000);
@@ -276,10 +282,16 @@ void acionarRele(String user){
  */
 int check_permition(String id){
    int i;
+   if(__only_master){                                   //Verifica se o sistema ta bloqueado para outros cartões, caso esteja, só libera para o master
+     if(secure_card[0][0].equals(id)){
+      return 0; 
+     }
+     return -1;
+   }
    if(counter_master_card >= 5) {   // Verifica se o cartão master foi inserido 5 vezes
     counter_master_card=0;
     mode_config();
-    add_new_card(false, "");            // Adiciona um novo cartão, não master.
+    add_new_user(false, "");            // Adiciona um novo cartão, não master.
     return -1;
    }
    for(i = 0; i < VECTOR_SIZE_MAX; i++){
@@ -296,7 +308,7 @@ int check_permition(String id){
 /*
  * Adiciona, ou remove, um cartão no bando de dados
  */
-void add_new_card(bool master, String user){
+void add_new_user(bool master, String user){
   bool _add=true;
   printMsg("Adicinar/Remover cartão");
   buzzer(500, 3);
@@ -357,9 +369,12 @@ void list_user(){
   String r = "";
   int i;
   for(i=0; i < VECTOR_SIZE_MAX; i++){
-    r += "USER: " + secure_card[i][1] + " TAG: " + secure_card[i][0] + "\n";
+    if(!secure_card[i][0].equals("") && !secure_card[i][1].equals("")){
+      r = (i+":" + secure_card[i][1] + ", " + secure_card[i][0]);
+      printMsg(r);
+    }
   }
-  printMsg(r);
+  
 }
 
 void remove_user(String tag){
@@ -369,10 +384,11 @@ void remove_user(String tag){
       secure_card[i][0] = "";
       secure_card[i][1] = "";
       printMsg("Usuário tag \'" + tag + "\' removido");
+      save_card();
       return;
     }
   }
-  save_card();
+  printMsg("Não existe: " + tag);
 }
 
 void get_card(){
@@ -390,9 +406,8 @@ void loop(){
       tagAtual = rfid->loop();                                // Lê a tag rfid
       if(!tagAtual.equals("")){
         int r = check_permition(tagAtual);                               
-        if(r != -1){                        // Verifica se tem acesso no sistema
-          printMsg("Portão aberto por: "+ secure_card[r][1] +" "+ secure_card[r][0]);
-          acionarRele(tagAtual);
+        if(r != -1){                        // Verifica se tem acesso no sistema 
+          acionarRele(secure_card[r][1]);
           _try=0;
         } else {
           printMsg("Tentativa de abrir por: " + tagAtual);
@@ -416,7 +431,7 @@ void loop(){
       end_mode_config();
       printMsg("Servidor web parado");
     }
-    //check_command(readSerialNoLook());
+    check_command(readSerialNoLock());
     verif_conf();                                             // Verifica o estado de algumas configurações
 }
 
