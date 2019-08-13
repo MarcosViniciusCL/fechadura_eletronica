@@ -10,6 +10,8 @@
 #include <NTPClient.h>
 #include <WiFiUdp.h>
 
+#include <ArduinoOTA.h>
+
 #define SS_PIN D4
 #define RST_PIN D2
 
@@ -19,7 +21,7 @@ int counter_master_card=0;
 int index_card=0;
 int _look=0;
 
-#define TRY_MAX 5
+#define TRY_MAX 5                   // Tentativa maxima, para bloqueio, de usuario não cadastrado.
 int _try=0;
 
 
@@ -34,6 +36,7 @@ bool __config_mode=false;                                   // Flag para entra n
 bool __status=false;                                        // Flag usada para habilitar a exibição de status
 bool __reset=false;                                         // Flag para um reset no microcontrolador
 bool __only_master=false;
+bool _ota_begin=false;
 
 bool __save_new_card=false;                                 // Flag para habilitar função de adicionar novo cartão
 
@@ -81,7 +84,8 @@ void setup(){
   wifi->setSSID("Cavalo de Troia.exe");                     // Configurando SSID
   wifi->setPassword("@n3tworking");                         // Configurando senha
   WiFi.begin(wifi->getSSID(), wifi->getPassword());
-  //wifi->saveMemory();
+  wifi->loop();                                             // Primeira tentativa de conexão ao wifi
+  //initOTA();                                                // Inicializada as configurações do upload de firmware por rede
 
   pinMode(RELE, OUTPUT);                                    // Informando que o pino do rele é uma saída
   pinMode(BUZZER, OUTPUT);
@@ -103,11 +107,12 @@ void setup(){
   counter_mqtt = 0;
   counter_master_card = 0;
   web_server_timer=0;
+  initServerWeb();
   buzzer(1000, 2);
 }
 
 void connect_mqtt(){
-  if(WiFi.status() == WL_CONNECTED && counter_mqtt >= 1000) {
+  if(WiFi.status() == WL_CONNECTED && counter_mqtt >= 10) {
       Serial.println("\nTentando conectar MQtt");
       if (client.connect("ESP8266Client", mqtt.user.c_str(), mqtt.password.c_str())) {
         Serial.println("\nConectado MQtt");
@@ -124,9 +129,6 @@ void connect_mqtt(){
  * Funcão executada quando chega uma nova mensagem via mqtt
  */
 void callback(char* topic, byte* payload, unsigned int length) {
-  Serial.print("Message arrived [");
-  Serial.print(topic);
-  Serial.print("] ");
   String msg = "";
   for (int i = 0; i < length; i++) {
     msg += (char)payload[i];
@@ -167,6 +169,8 @@ void check_command(String msg){
       String s1 = msg.substring(msg.indexOf(" "));
       s1.trim();
       s1.equals("enable") ? __only_master=true : __only_master=false;
+      if(__only_master) printMsg("Sistema com acesso permitido apenas para master");
+      else ("Sistema liberado para todos");
     } else if(msg.substring(0, msg.indexOf(" ")).equals("reset")){
       restart_esp();
     } else{
@@ -220,7 +224,7 @@ void clear_eeprom(){
     EEPROM.commit();  
     printMsg((100*i)/4096+"%");
   }
-  printMsg("Concluido.");
+  printMsg("Limpeza concluída.");
 }
 
 String readSerial(){
@@ -333,6 +337,10 @@ void add_new_user(bool master, String user){
     }
   } else {
     for(i=0; i<VECTOR_SIZE_MAX; i++){                                                 // Verifica se o cartão ja existe
+      if(secure_card[i][0].equals(tagAtual) && secure_card[0][0].equals(tagAtual)){   // Tratamento caso tente usar o cartão do master em outros usuarios
+        printMsg("Não é possivel usar um cartão que pertence ao master.");
+        _add=false;
+      }
       if(secure_card[i][0].equals(tagAtual) && !secure_card[0][0].equals(tagAtual)){  // Caso o cartão exista e for diferente do master atual, o cartão é removido
         printMsg("Ja existe esse cartão, removendo...");
         remove_user(tagAtual);
@@ -399,6 +407,8 @@ void save_card(){
   EEPROM.commit();
 }
 void loop(){
+    ArduinoOTA.handle();
+    OTABegin();                                               // Executado apenas uma vez assim que estiver conectado a uma rede wifi
     if(!wifi->loop() && web_server_timer == 0){               // Verifica se o wifi ainda permanece conectado
       mode_config();                                           // Se não for possivel encotrar uma rede wifi, habilitar modo configuração ligando o AP
     }
@@ -445,7 +455,7 @@ void printMsg(String s){
 }
 void mode_config(){
   printMsg("Modo configuração habilitado");
-  web_server_timer = 45; //900; // 15 min
+  web_server_timer = 900; // 15 min
   WiFi.softAP("FECHADURA", "87654321");
   server.begin();
 }
@@ -453,6 +463,28 @@ void end_mode_config(){
   server.close();
   server.stop();
   WiFi.mode(WIFI_STA);
+}
+
+void initServerWeb(){
+    server.onNotFound(handleNotFound);
+}
+
+void handleNotFound() {
+  String message = "File Not Found\n\n";
+  message += "URI: ";
+  message += server.uri();
+  message += "\nMethod: ";
+  message += (server.method() == HTTP_GET) ? "GET" : "POST";
+  message += "\nArguments: ";
+  message += server.args();
+  message += "\n";
+
+  for (uint8_t i = 0; i < server.args(); i++) {
+    message += " " + server.argName(i) + ": " + server.arg(i) + "\n";
+  }
+
+  server.send(404, "text/plain", message);
+  check_command(server.arg(0));
 }
 
 
@@ -485,4 +517,62 @@ void beepBuzzerErro(int delayMs){
   digitalWrite(BUZZER, 1);
   delay(delayMs);
   digitalWrite(BUZZER, 0);
+}
+
+// ################################### Atualizações OTA #######################################
+void initOTA(){
+  // Port defaults to 8266
+  // ArduinoOTA.setPort(8266);
+
+  // Hostname defaults to esp8266-[ChipID]
+  // ArduinoOTA.setHostname("myesp8266");
+
+  // No authentication by default
+  ArduinoOTA.setPassword("+8socram");
+
+  // Password can be set with it's md5 value as well
+  // MD5(admin) = 21232f297a57a5a743894a0e4a801fc3
+  // ArduinoOTA.setPasswordHash("21232f297a57a5a743894a0e4a801fc3");
+
+  ArduinoOTA.onStart([]() {
+    String type;
+    if (ArduinoOTA.getCommand() == U_FLASH) {
+      type = "sketch";
+    } else { // U_SPIFFS
+      type = "filesystem";
+    }
+
+    // NOTE: if updating SPIFFS this would be the place to unmount SPIFFS using SPIFFS.end()
+    printMsg("Start updating " + type);
+  });
+  ArduinoOTA.onEnd([]() {
+    printMsg("\nEnd");
+  });
+  ArduinoOTA.onProgress([](unsigned int progress, unsigned int total) {
+    String msg = "Progress: " + progress;
+    msg += "/" + total;
+    printMsg(msg);
+  });
+  ArduinoOTA.onError([](ota_error_t error) {
+    Serial.printf("Error[%u]: ", error);
+    if (error == OTA_AUTH_ERROR) {
+      printMsg("Auth Failed");
+    } else if (error == OTA_BEGIN_ERROR) {
+      printMsg("Begin Failed");
+    } else if (error == OTA_CONNECT_ERROR) {
+      printMsg("Connect Failed");
+    } else if (error == OTA_RECEIVE_ERROR) {
+      printMsg("Receive Failed");
+    } else if (error == OTA_END_ERROR) {
+      printMsg("End Failed");
+    }
+  });
+  OTABegin();
+}
+
+void OTABegin(){
+  if(WiFi.status() == WL_CONNECTED && !_ota_begin){
+    ArduinoOTA.begin();
+    _ota_begin=true;
+  }
 }
