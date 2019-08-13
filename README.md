@@ -21,8 +21,31 @@
          um novo cartão. Aproxime o cartão que será 
          utilizado. 
     
-    Ex: add_new_card maria
+    Ex: add_new_user maria
     
+    1.2 - Comando para remover um usuário que já esta 
+          cadastrado no sistema 
+    remove_user <tag>
+    <tag> - Número da tag do usuario que deve ser removido.
+	    Esse numero pode ser visto com o retorno do 
+            comando list_user.
+    Obs: Esse comando deve ser usado com cuidado, pois
+	 com ele qualquer usuario pode ser removido, como
+	 o usuario principal, o master.
+    
+    Ex: list_user
+
+    1.3 - Comando para lista todos os usuários que estão
+	  salvo sa memoria do dispositivo.
+
+    list_user
+
+	Obs: O comando não necessita de argumentos, logo
+	     a execução retorna todos os usuários que
+	     cadastrados. Por ser usado no auxílio na
+	     remoção de um usuário.
+
+
 2 - Rede Wifi
     2.2 - Comando para alterar rede wifi, nome e senha.
     
@@ -40,3 +63,6 @@
          ficar sem comunicação por um certo periodo de 
          tempo. Verifique para não colocar um wifi que
          esteja errado.
+
+3 - Segurança 
+	nada a declarar
