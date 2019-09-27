@@ -28,7 +28,6 @@ class RFID {
       r = "";
       if ( mfrc522.PICC_IsNewCardPresent()){
             if ( mfrc522.PICC_ReadCardSerial()){ 
-               Serial.print("Tag UID:");
                for (byte i = 0; i < mfrc522.uid.size; i++) {
                       r += mfrc522.uid.uidByte[i];
                }
