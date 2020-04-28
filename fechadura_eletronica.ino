@@ -14,7 +14,7 @@
 #include <FS.h>
 #include <ArduinoOTA.h>
 #include <ArduinoJson.h>
-#include <AESLib.h>
+//#include <AESLib.h>
 
 #define PIN_OFFSET 0
 #define DATA_OFFSET 5
@@ -40,7 +40,7 @@ int porta = 80;
 #define WAIT_TIME_WIFI 10                     // Tempo de tentativa de conexao do wifi em segundos
 #define CHECK_TIME 9                          // Tempo entre cada verificação de conexao, em segundos
 
-char MQTT_ENABLE = 1;
+unsigned char MQTT_ENABLE = 1;
 
 #define VECTOR_SIZE_MAX 3
 String secure_card[VECTOR_SIZE_MAX+1][2];
@@ -76,13 +76,13 @@ typedef struct m {                                          // Estrutuda de dado
 } conf_mqtt;
 
 conf_mqtt mqtt;
-uint8_t pin_int = D2;
+uint8_t GPIO_Pin = D2;
 
 void setup() {
   Serial.begin(115200);
-  pinMode(RELE, OUTPUT);
+  //pinMode(RELE, OUTPUT);
   pinMode(BUZZ, OUTPUT);
-  digitalWrite(RELE, HIGH);
+  //digitalWrite(RELE, HIGH);
   digitalWrite(BUZZ, LOW);
 
   
@@ -97,6 +97,11 @@ void setup() {
   /* ##### RFID CONFIG #### */
   SPI.begin();
   rfid.PCD_Init();
+  rfid.PCD_WriteRegister(MFRC522::ComIrqReg, 0x80); //Clear interrupts
+  rfid.PCD_WriteRegister(MFRC522::ComIEnReg, 0x7F); //Enable all interrupts
+  rfid.PCD_WriteRegister(MFRC522::DivIEnReg, 0x14);
+  Serial.println(F("Ready..."));
+  //attachInterrupt(digitalPinToInterrupt(GPIO_Pin), IntCallback, RISING);
   for (byte i = 0; i < 6; i++) {
     key.keyByte[i] = 0xFF;
   }
@@ -144,6 +149,11 @@ void loop() {
   ArduinoOTA.handle();
   
   //delay(50);
+}
+
+void IntCallback(){
+  Serial.println(F("Interrupt"));
+  rfid.PCD_WriteRegister(MFRC522::ComIrqReg, 0x80); //Clear interrupts
 }
 
 void setupOta(){
@@ -391,13 +401,7 @@ bool saveCards(){
 }
 
 void getCards(){
-  File rFile = SPIFFS.open("/CARDS","r");
-  if (!rFile) {
-    Serial.println("[ERRO] NAO FOI POSSIVEL CARREGAR OS CARTOES SALVOS");
-  }
-  String content = rFile.readStringUntil('\r'); //desconsidera '\r\n'
-  rFile.close();
-  content.trim();
+  String content = readFile("/CARDS");
 
   int i;
   int j=0;
@@ -417,6 +421,41 @@ void getCards(){
   }
 }
 
+void loadConfig(){
+  String content = readFile("/CONFIG");
+  if (content.equals("")) {
+    msg("[ERRO] NAO FOI POSSIVEL CARREGAR OS CONFIGURAÇÕES SALVAS");
+    return;
+  }
+  String buff = "";
+  for (char c : content){
+    if(c == ','){
+      StringSplitter *split = new StringSplitter(buff, ':', 2);
+      String tag = split->getItemAtIndex(0);
+      String nome = split->getItemAtIndex(1);
+      buff = "";
+    } else {
+      buff += c;
+    }
+    
+  }
+  
+}
+
+String readFile(String path){
+//  if(!SPIFFS.exists(path)){
+//    
+//  }
+  File rFile = SPIFFS.open(path,"w+");
+  if (!rFile) {
+    msg("[ERRO] NAO FOI POSSIVEL ABRIR: " + path);
+    return "";
+  }
+  String content = rFile.readStringUntil('\r'); //desconsidera '\r\n'
+  rFile.close();
+  content.trim();
+  return content;
+}
 
 
 void clearEEPROM() {
