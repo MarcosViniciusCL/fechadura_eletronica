@@ -1,6 +1,6 @@
 # Como configurar a primeira execução?
 
-##Na primeira execução do sistema, é necessário que seja enviado um arquivo no formato JSON:
+## Na primeira execução do sistema, é necessário que seja enviado um arquivo no formato JSON:
 
 ```
 {
