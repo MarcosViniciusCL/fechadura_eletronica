@@ -1,68 +1,22 @@
-#######################################################
-#           LISTA DE COMANDOS VIA MQTT                #
-#######################################################
+# Como configurar a primeira execução?
 
+## Na primeira execução do sistema, é necessário que seja enviado um arquivo no formato JSON:
 
-1 - Usuário
-    1.1 - Comando para adicionar um novo usuário, ou 
-          no sistema. Caso um ja exista um cartão com
-          o mesmo código, será apagado.
-    
-    add_new_user [<name> | master]?
-    
-    Parâmetros:
-    <name> - Nome do novo usuario que será adicionado
-    master - Usuário principal. Ele não pode ter um 
-             nome diferente. Caso seja adicionado um
-             novo usuário com nome "master", será 
-             adicionado como principal.
-    Obs: Deve ser usado apenas uma das opções. Após o 
-         envio do comando a fechadura vai esperar por
-         um novo cartão. Aproxime o cartão que será 
-         utilizado. 
-    
-    Ex: add_new_user maria
-    
-    1.2 - Comando para remover um usuário que já esta 
-          cadastrado no sistema 
-    remove_user <tag>
-    <tag> - Número da tag do usuario que deve ser removido.
-	    Esse numero pode ser visto com o retorno do 
-            comando list_user.
-    Obs: Esse comando deve ser usado com cuidado, pois
-	 com ele qualquer usuario pode ser removido, como
-	 o usuario principal, o master.
-    
-    Ex: list_user
+```
+{
+  "network": {
+    "wifi": ["SSID", "SENHA"],
+    "mqtt": {
+      "server": "IP",
+      "user": "USUARIO",
+      "password": "SENHA",
+      "port": "PORTA",
+      "topic": "TOPIC"
+    }
+  },
+  "system": {
+    "password": "0000"
+  }
+}
+```
 
-    1.3 - Comando para lista todos os usuários que estão
-	  salvo sa memoria do dispositivo.
-
-    list_user
-
-	Obs: O comando não necessita de argumentos, logo
-	     a execução retorna todos os usuários que
-	     cadastrados. Por ser usado no auxílio na
-	     remoção de um usuário.
-
-
-2 - Rede Wifi
-    2.2 - Comando para alterar rede wifi, nome e senha.
-    
-    change_wifi <ssid>, <password>
-    
-    Parâmetros:
-    <ssid>      - Nome da rede alvo que a fechadura deve 
-                  se conectar.
-    <password>  - Senha da rede wifi que a fechadura deve
-                  se conectar.
-    Obs: Ao executar o comando a fechadura vai se 
-         desconectar da rede Wifi atual, e tentar se 
-         conectar na nova, logo perde a comunicação com 
-         o servidor MQtt. Se você estiver distante, pode
-         ficar sem comunicação por um certo periodo de 
-         tempo. Verifique para não colocar um wifi que
-         esteja errado.
-
-3 - Segurança 
-	nada a declarar
