@@ -14,6 +14,8 @@
 #include <FS.h>
 #include <ArduinoOTA.h>
 #include <ArduinoJson.h>
+#include <NTPClient.h>
+#include <WiFiUdp.h>
 //#include <AESLib.h>
 
 #define PIN_OFFSET 0
@@ -52,13 +54,13 @@ MFRC522 rfid(SS_PIN, RST_PIN);
 MFRC522::MIFARE_Key key; 
 
 WiFiClient espClient;
-WiFiClient socket;
 PubSubClient client(espClient);
 
-StaticJsonDocument<200> doc;
+//StaticJsonDocument<1024> doc;
+DynamicJsonDocument doc(2048);
 
-//WiFiUDP ntpUDP;
-//NTPClient timeClient(ntpUDP, "a.st1.ntp.br", -3 * 3600, 60000);
+WiFiUDP ntpUDP;
+NTPClient timeClient(ntpUDP, "a.st1.ntp.br", -3 * 3600, 60000);
 
 char _mqtt_conectado = 0;
 char _wifi_conectado = 0;
@@ -79,132 +81,204 @@ conf_mqtt mqtt;
 uint8_t GPIO_Pin = D2;
 
 void setup() {
-  Serial.begin(115200);
-  //pinMode(RELE, OUTPUT);
-  pinMode(BUZZ, OUTPUT);
-  //digitalWrite(RELE, HIGH);
-  digitalWrite(BUZZ, LOW);
-
-  
-
-  /* ###### SPIFFS ###### */
-  if(!SPIFFS.begin()){
-    Serial.println("\nErro ao abrir o sistema de arquivos");
-  }
-  getPin();
-  getCards();
-  
-  /* ##### RFID CONFIG #### */
-  SPI.begin();
-  rfid.PCD_Init();
-  rfid.PCD_WriteRegister(MFRC522::ComIrqReg, 0x80); //Clear interrupts
-  rfid.PCD_WriteRegister(MFRC522::ComIEnReg, 0x7F); //Enable all interrupts
-  rfid.PCD_WriteRegister(MFRC522::DivIEnReg, 0x14);
-  Serial.println(F("Ready..."));
-  //attachInterrupt(digitalPinToInterrupt(GPIO_Pin), IntCallback, RISING);
-  for (byte i = 0; i < 6; i++) {
-    key.keyByte[i] = 0xFF;
-  }
-
-  /* ###### WiFi CONFIG ######### */
-  WiFi.mode(WIFI_STA);
-  WiFi.begin(ssid, password);
-
-  /* ###### MQTT CONFIG ######### */
-  mqtt.server = "postman.cloudmqtt.com";
-  mqtt.user = "jsxgzfyb";
-  mqtt.password = "Gb5a2cgqb_K6";
-  mqtt.port = 14157;
-  mqtt.subTopic = "/galeria/portao/esp8266";
-  client.setServer(mqtt.server.c_str(), mqtt.port);
-  client.setCallback(callback);
-
-  /* ###### VARIAVEIS DO SISTEMA ########## */
+    initESP();
+  /* ###### VARIAVEIS DO SISTEMA ########## 
   //secure_card[INDEX_ROOT][0] = "1234";
 
-  delay(3000);
-  msg("\nSISTEMA INICIADO");
+  delay(3000);*/
+
 }
 
 void loop() {
   if(_wifi_conectado != 1){
     conectar_wifi();
-  }
-  if(_mqtt_conectado != 1){
+  } 
+  if(_mqtt_conectado == 0){
     connect_mqtt();
   }
+  client.loop();
+  
   
   String v = lerRFID();
   if(!v.equals("")){
+    msg("V: " + v);
     checkCardToOpen(v);
   }
+  verif_conexao();
+  timeClient.update();
 
-  client.loop();
+  
+  /* 
   //timeClient.update();
-  verif_recurso();
+  
   if (Serial.available() > 0) {
     String m = Serial.readString();
     checkCommand(m);
   }
   ArduinoOTA.handle();
-  
-  //delay(50);
+  */
+  delay(50);
 }
 
-void IntCallback(){
-  Serial.println(F("Interrupt"));
-  rfid.PCD_WriteRegister(MFRC522::ComIrqReg, 0x80); //Clear interrupts
-}
+void initESP(){
+    char filesystem = -1;
+    Serial.begin(115200);
+    delay(3000);
+    Serial.println("\n\nSEJA BEM VINDO - UNLOCKED");
+    Serial.println("Iniciando saidas do sistema...");
+    pinMode(RELE, OUTPUT);
+    digitalWrite(RELE, HIGH);
+    pinMode(BUZZ, OUTPUT);
+    digitalWrite(BUZZ, LOW);
+    Serial.println("Iniciando sistema de arquivos...");
+    /* ###### SPIFFS ###### */
+    if(!SPIFFS.begin()){
+        Serial.println("\nErro ao abrir o sistema de arquivo...");
+        while (1);
+    }
+    File rFile = SPIFFS.open("/CONFIG","r");
+    if (!rFile) { // Será executado apenas se for a primeira vez que estiver usando o sistema
+        Serial.println("Configuração necessaria na primeira execução.\nDeseja configurar agora? [S/n]: ");
+        String r = lerSerial();
+        r.toLowerCase();
+        while(!r.equals("s")){
+            Serial.println("Desculpe, mas para usar tem que configurar. Vamos agora? [S/n]: ");
+            r = lerSerial();
+            r.toLowerCase();
+        }
+        Serial.println("Formatando memoria....");
+        SPIFFS.format();
+        String conf;
+        char reenviar_conf = 0;
+        do {
+            reenviar_conf = 0;
+            Serial.println("Pronto. Preciso que voce envie um arquivo de configuracao. [Sobre: https://github.com/MarcosViniciusCL/fechadura_eletronica]");
+            char erro = -1;
+            while(erro != 0){
+                erro = 0;
+                conf = lerSerial();
+                //conf.replace(" ", "");
+                DeserializationError err = deserializeJson(doc, conf);
+                if (err) {
+                    Serial.print(F("deserializeJson() failed with code "));
+                    Serial.println(err.c_str());
+                    erro = 1;
+                    Serial.println("Houve um erro no arquivo enviado.\nVerifique o link para informacoes para fazer o arquivo, e envie novamente.\n[Sobre: https://github.com/MarcosViniciusCL/fechadura_eletronica]");
+                }
+            }
+            // Exibindo os dados enviado para o usuario aceitar.
+            auto ssid = doc["network"]["wifi"][0].as<char*>();
+            auto wifi_password = doc["network"]["wifi"][1].as<char*>();
 
-void setupOta(){
-  // Port defaults to 8266
-  // ArduinoOTA.setPort(8266);
+            auto mqtt_server = doc["network"]["mqtt"]["server"].as<char*>();
+            auto mqtt_user = doc["network"]["mqtt"]["user"].as<char*>();
+            auto mqtt_password = doc["network"]["mqtt"]["password"].as<char*>();
+            auto mqtt_port = doc["network"]["mqtt"]["port"].as<int>();
+            auto mqtt_topic = doc["network"]["mqtt"]["topic"].as<char*>();
 
-  // Hostname defaults to esp8266-[ChipID]
-  ArduinoOTA.setHostname("esp_fechadura");
+            auto pin = doc["system"]["password"].as<char*>();
 
-  // No authentication by default
-  //ArduinoOTA.setPassword("mv4016");
-
-  // Password can be set with it's md5 value as well
-  // MD5(admin) = 21232f297a57a5a743894a0e4a801fc3
-  // ArduinoOTA.setPasswordHash("21232f297a57a5a743894a0e4a801fc3");
+            Serial.println("\n\n**********************");
+            Serial.println("NETWORK:");
+            Serial.println("ssid: " + String(ssid) + "\nsenha: " + String(wifi_password));
+            Serial.println("MQTT:");
+            Serial.println("server: " + String(mqtt_server) + "\nuser: " + String(mqtt_user) + "\npassword: " + String(mqtt_password) + "\nport: " + String(mqtt_port) + "\ntopic: " + String(mqtt_topic));
+            Serial.println("SYSTEM:");
+            Serial.println("password: " + String(pin));
+            Serial.println("**********************\n\n");
     
-  ArduinoOTA.onStart([]() {
-    String type;
-    if (ArduinoOTA.getCommand() == U_FLASH) {
-      type = "sketch";
-    } else { // U_FS
-      type = "filesystem";
+            Serial.println("Salvar configuracao? [S/n]: ");
+            r = lerSerial();
+            r.toLowerCase();
+            if(r.equals("s")){
+                File rFile = SPIFFS.open("/CONFIG","w+");
+                rFile.println(conf); 
+                rFile.close();
+                changeWifi(String(ssid), String(wifi_password));
+                Serial.println("Configuracao foi salva.");
+            } else {
+                Serial.println("Nada foi salvo. Reenvie o arquivo...");
+                reenviar_conf = 1;
+                delay(1000);
+            }
+        } while (reenviar_conf == 1);
     }
 
-    // NOTE: if updating FS this would be the place to unmount FS using FS.end()
-    Serial.println("Start updating " + type);
-  });
-  ArduinoOTA.onEnd([]() {
-    Serial.println("\nEnd");
-  });
-  ArduinoOTA.onProgress([](unsigned int progress, unsigned int total) {
-    Serial.printf("Progress: %u%%\r", (progress / (total / 100)));
-  });
-  ArduinoOTA.onError([](ota_error_t error) {
-    Serial.printf("Error[%u]: ", error);
-    if (error == OTA_AUTH_ERROR) {
-      Serial.println("Auth Failed");
-    } else if (error == OTA_BEGIN_ERROR) {
-      Serial.println("Begin Failed");
-    } else if (error == OTA_CONNECT_ERROR) {
-      Serial.println("Connect Failed");
-    } else if (error == OTA_RECEIVE_ERROR) {
-      Serial.println("Receive Failed");
-    } else if (error == OTA_END_ERROR) {
-      Serial.println("End Failed");
+    Serial.println("Iniciando modulo de leitor de cartao....");
+    // ##### RFID CONFIG #### 
+    SPI.begin();
+    rfid.PCD_Init();
+    rfid.PCD_WriteRegister(MFRC522::ComIrqReg, 0x80); //Clear interrupts
+    rfid.PCD_WriteRegister(MFRC522::ComIEnReg, 0x7F); //Enable all interrupts
+    rfid.PCD_WriteRegister(MFRC522::DivIEnReg, 0x14);
+    for (byte i = 0; i < 6; i++) {
+        key.keyByte[i] = 0xFF;
     }
-  });
-  ArduinoOTA.begin();
-  msg("Atualização OTA: ON");
-  msg("IP: " + WiFi.localIP());
+
+    Serial.println("Carregando configuracoes...");
+    upConfig();
+
+    Serial.println("Configurando modo de trabalho do wifi...");
+    // ###### WiFi CONFIG ######### 
+    WiFi.mode(WIFI_STA);
+
+    Serial.println("Configurando dados MQTT...");
+
+    // ###### MQTT CONFIG ######### 
+    client.setServer(mqtt.server.c_str(), mqtt.port);
+    client.setCallback(callback);
+
+    Serial.println("Iniciando cliente NTP...");
+    timeClient.begin();
+
+
+    Serial.println("SISTEMA INICIADO\n\n");
+
 }
+
+String lerSerial(){
+    while (Serial.available() <= 0);
+    return Serial.readStringUntil('\n');
+}
+
+void changeWifi(String s, String p) {
+  ssid = s;
+  password = p;
+  WiFi.disconnect();
+}
+
+
+void upConfig(){
+    File rFile = SPIFFS.open("/CONFIG","r");
+    if (!rFile) {
+        msg("Erro nas configuracoes do sistema. Sistema de ser formatado.");
+        if(lerSerial().equals("s")){
+            msg("Formatando memoria e reiniciando....");
+            SPIFFS.format();
+            ESP.reset();
+        }
+        while (1) delay(100);
+    }
+    String content = rFile.readStringUntil('\r'); //desconsidera '\r\n'
+    rFile.close();
+    DeserializationError err = deserializeJson(doc, content);
+    ssid = String(doc["network"]["wifi"][0].as<char*>());
+    //auto wifi_password = doc["network"]["wifi"][1].as<char*>();
+
+    // ###### MQTT CONFIG ######### 
+    mqtt.server = String(doc["network"]["mqtt"]["server"].as<char*>());
+    mqtt.user = String(doc["network"]["mqtt"]["user"].as<char*>());
+    mqtt.password = String(doc["network"]["mqtt"]["password"].as<char*>());
+    mqtt.port = doc["network"]["mqtt"]["port"].as<int>();
+    mqtt.subTopic = doc["network"]["mqtt"]["topic"].as<char*>();
+
+    PIN = doc["system"]["password"].as<char*>();
+}
+
+void publicar(String msg){
+    client.publish((mqtt.subTopic + "/output").c_str(), msg.c_str());
+}
+
 
 String lerRFID(){
   if((millis() - rfid_time_prev) >= 50){
@@ -225,7 +299,7 @@ String lerRFID(){
     if (piccType != MFRC522::PICC_TYPE_MIFARE_MINI &&  
       piccType != MFRC522::PICC_TYPE_MIFARE_1K &&
       piccType != MFRC522::PICC_TYPE_MIFARE_4K) {
-      Serial.println(F("Your tag is not of type MIFARE Classic."));
+      msg(F("Your tag is not of type MIFARE Classic."));
       return "";
     }
     String r = "";
@@ -248,6 +322,8 @@ void openDoor(){
   digitalWrite(RELE, LOW);
   delay(500);
   digitalWrite(RELE, HIGH);
+  msg("Publicando...");
+  publicar("Aberto");
 }
 
 void callback(char* topic, byte* payload, unsigned int length) {
@@ -259,66 +335,79 @@ void callback(char* topic, byte* payload, unsigned int length) {
   checkCommand(m);
 }
 
-void connect_serve(){
-  if(socket.connect(server, porta)){
-    msg("Conectado " + server);
-    socket.println("Oi bb");
-  }
-}
 
-void enable_mqtt(String r){
-    MQTT_ENABLE = (r.equals("true"))  ? 1 : MQTT_ENABLE;
-    MQTT_ENABLE = (r.equals("false")) ? 0 : MQTT_ENABLE;
-}
 
 void connect_mqtt() {
-  if(MQTT_ENABLE){
-    _mqtt_conectado = (client.connected()) ? 1 : 0;
-    if(_mqtt_conectado){
-      msg("MQTT: CONECTADO");
-      return;
-    }
-    if((millis() - mqtt_time_prev) >= (WAIT_TIME_MQTT*1000)){
-      connect_serve();
-      mqtt_time_prev = millis();
-      if (_wifi_conectado == 1) {
-        msg("MQTT: CONECTANDO...");
-        int r = client.connect("ESP8266Client", mqtt.user.c_str(), mqtt.password.c_str());
-        if (r) {
-          client.subscribe(mqtt.subTopic.c_str());
-          _mqtt_conectado = 1;
-          msg("MQTT: CONECTADO");
+    if (MQTT_ENABLE && _wifi_conectado){
+        if(abs((millis() - mqtt_time_prev)) >= (WAIT_TIME_MQTT*1000)){
+            mqtt_time_prev = millis();
+            if(!client.connected()){
+                msg("MQTT: CONECTANDO... [" + mqtt.server + ":" + mqtt.port + "]");
+                String clientId = "ESP8266Client-";
+                clientId += String(random(0xffff), HEX);
+                int r = client.connect(clientId.c_str(), mqtt.user.c_str(), mqtt.password.c_str());
+                //Serial.println(r ? "MQTT: FALHOU" : "MQTT: CONECTADO");
+                if (r) {
+                    client.publish((mqtt.subTopic + "/output").c_str(), "hello world");
+                    client.subscribe(mqtt.subTopic.c_str());
+                    _mqtt_conectado = 1;
+                }
+            }
         }
-      }
-   }
-  }
+    }
+}
+
+
+void mostrarErroMqtt(int err){
+    switch (err) {
+        case MQTT_CONNECTION_TIMEOUT: msg("MQTT: SEM RESPOSTA"); break;
+        case MQTT_CONNECTION_LOST: msg("MQTT: CONEXAO PERDIDA"); break;
+        case MQTT_CONNECT_FAILED: msg("MQTT: CONEXAO FALHOU"); break;
+        case MQTT_DISCONNECTED: msg("MQTT: DISCONECTADO."); break;
+        case MQTT_CONNECTED: msg("MQTT: CONECTADO"); break;
+        case MQTT_CONNECT_BAD_PROTOCOL: msg("MQTT: O SERVIDOR NAO SUPORTA VERSAO MQTT"); break;
+        case MQTT_CONNECT_BAD_CLIENT_ID: msg("MQTT: SERVIDOR REJEITOU O ID DO CLIENTE"); break;
+        case MQTT_CONNECT_UNAVAILABLE: msg("MQTT: SERVIDOR NAO DISPONIVEL PARA CONEXAO"); break;
+        case MQTT_CONNECT_BAD_CREDENTIALS: msg("MQTT: EMAIL OU SENHA ERRADO"); break;
+        case MQTT_CONNECT_UNAUTHORIZED: msg("MQTT: CLIENTE NAO AUTORIZADO"); break;
+        default: break;
+    }
+
 }
 
 void conectar_wifi(){
   _wifi_conectado = (WiFi.status() == WL_CONNECTED) ? 1 : 0;
   if (_wifi_conectado == 1){
-    msg("WIFI: CONECTADO ["+WiFi.SSID()+"]");
-    setupOta();
+    Serial.println("WIFI: CONECTADO ["+WiFi.SSID()+"]");
+    //setupOta();
     return;
   }
   if((millis()-wifi_time_prev) >= (WAIT_TIME_WIFI*1000)){
     wifi_time_prev = millis();
     WiFi.begin(ssid.c_str(), password.c_str());
-    msg("WIFI: CONECTANDO... ["+WiFi.SSID()+"]");
+    Serial.println("WIFI: CONECTANDO... ["+WiFi.SSID()+"]");
   }
 }
 
-void verif_recurso(){
+void verif_conexao(){
   if((millis() - check_time_prev) >= (CHECK_TIME*1000)){
     check_time_prev = millis();
     _wifi_conectado = (WiFi.status() == WL_CONNECTED) ? 1 : 0;      // Verifica se tem conexão com a internet
-    _mqtt_conectado = (client.connected()) ? 1 : 0;                 // Verifica se o MQTT ta conectado
+    int mqtt_state = client.state();
+    _mqtt_conectado = (mqtt_state == 0) ? 1 : 0;                 // Verifica se o MQTT ta conectado
+    if (client.state() != 0) {
+        mostrarErroMqtt(client.state());
+    }
   }
 }
 
 void msg(String msg){
-  String time_c = ""; //(_wifi_conectado) ? timeClient.getDayInText() + ", " + timeClient.getFormattedTime() : "S/H";
-  Serial.println(" " + msg);
+    Serial.println(diasHoras() + " -> " + msg);
+}
+
+String diasHoras(){
+    String dias[7]={"Domingo", "Segunda-feira", "Terça-feira", "Quarta-feira", "Quinta-feira", "Sexta-feira", "Sabado"};
+    return  (_wifi_conectado) ? dias[timeClient.getDay()] + ", " + timeClient.getFormattedTime() : "S/H";
 }
 
 void buzzer(int i){
@@ -331,131 +420,13 @@ void buzzer(int i){
   }
 }
 
+void solicitarAbertura(String tag){
+    String msg = "{\"type\":\"question\",\"timestamp\":\"" + diasHoras() + "\",\"data\":{\"cmd\":\"open\",\"tag\":\"" + tag + "\"}}";
+    publicar(msg);
+}
 /* ################################### CONFIGURAÇÃO DO SISTEMA E USUARIOS ##########################################*/
 
 bool _root = false;
-
-/**
- * Login para usuario root na maquina. Sem a autenticação, não é permitido alterar configuração do sistema.
- */
-void login(String pin_test){
-  _root = (pin_test.equals(PIN)) ? true : false;
-  msg((_root) ? "LOGIN: SUCESSO" : "LOGIN: FALHA");
-}
-
-void logout(){
-  _root = false;
-  msg("Logout");
-}
-
-void changePin(String pin_new){
-  if(pin_new.length() == 4){
-    PIN = pin_new;
-    savePin();
-    _root = false;
-    msg("Senha salva. Entre novamente");
-  } else {
-    msg("Nova senha não contém 4 digitos.");
-  }
-}
-
-
-void savePin(){
-  File rFile = SPIFFS.open("/PIN","w+"); 
-  if(!rFile){
-    msg("Erro ao abrir arquivo!");
-  } else {
-    rFile.println(PIN);
-  }
-  rFile.close();
-}
-
-void getPin(){
-  File rFile = SPIFFS.open("/PIN","r");
-  if (!rFile) {
-    Serial.println("Erro ao abrir arquivo!");
-  }
-  String content = rFile.readStringUntil('\r'); //desconsidera '\r\n'
-  rFile.close();
-  content.trim();
-  PIN = content;
-}
-
-bool saveCards(){
-  int i;
-  String str = "";
-  for(i=0; i < VECTOR_SIZE_MAX; i++){
-    if(!secure_card[i][0].equals("")){
-      str += secure_card[i][0]+":"+secure_card[i][1]+","; 
-    }
-  }
-  File rFile = SPIFFS.open("/CARDS","w+"); 
-  if(!rFile){
-    msg("Erro ao abrir arquivo!");
-    return false;
-  } else {
-    rFile.println(str);
-  }
-  rFile.close();
-  return true;
-}
-
-void getCards(){
-  String content = readFile("/CARDS");
-
-  int i;
-  int j=0;
-  String buff = "";
-  for(i=0; i < content.length(); i++){
-    if(content[i] == ','){
-      StringSplitter *split = new StringSplitter(buff, ':', 2);
-      String tag = split->getItemAtIndex(0);
-      String nome = split->getItemAtIndex(1);
-      secure_card[j][0] = tag;
-      secure_card[j][1] = nome;
-      buff = "";
-      j++;
-      i++;
-    }
-    buff += content[i];
-  }
-}
-
-void loadConfig(){
-  String content = readFile("/CONFIG");
-  if (content.equals("")) {
-    msg("[ERRO] NAO FOI POSSIVEL CARREGAR OS CONFIGURAÇÕES SALVAS");
-    return;
-  }
-  String buff = "";
-  for (char c : content){
-    if(c == ','){
-      StringSplitter *split = new StringSplitter(buff, ':', 2);
-      String tag = split->getItemAtIndex(0);
-      String nome = split->getItemAtIndex(1);
-      buff = "";
-    } else {
-      buff += c;
-    }
-    
-  }
-  
-}
-
-String readFile(String path){
-//  if(!SPIFFS.exists(path)){
-//    
-//  }
-  File rFile = SPIFFS.open(path,"w+");
-  if (!rFile) {
-    msg("[ERRO] NAO FOI POSSIVEL ABRIR: " + path);
-    return "";
-  }
-  String content = rFile.readStringUntil('\r'); //desconsidera '\r\n'
-  rFile.close();
-  content.trim();
-  return content;
-}
 
 
 void clearEEPROM() {
@@ -520,173 +491,16 @@ void addNewUser(bool master, String user) {
     }
   }
   buzzer(1);
-  saveCards();
 }
 
-
-void removeUser(String tag) {
-  int i;
-  for (i = 0; i < VECTOR_SIZE_MAX; i++) {
-    if (secure_card[i][0].equals(tag)) {
-      secure_card[i][0] = "";
-      secure_card[i][1] = "";
-      msg("USUARIO REMOVIDO: " + tag);
-      saveCards();
-      return;
-    }
-  }
-  msg("Não existe: " + tag);
-}
-
-
-void changeWifi(String s, String p) {
-  ssid = s;
-  password = p;
-  WiFi.disconnect();
-}
-
-void listUser() {
-  String r = "";
-  int i;
-  for (i = 0; i < VECTOR_SIZE_MAX; i++) {
-    if (!secure_card[i][0].equals("")) {
-      r = (secure_card[i][1] + ", " + secure_card[i][0]);
-      msg(r);
-    }
-  }
-  if(r.equals("")) msg("SEM CARTAO");
-
-}
-
-int checkAuth(String tag){
-  int i;
-  for (i = 0; i < VECTOR_SIZE_MAX; i++) {
-    if (secure_card[i][0].equals(tag)) {
-      if(i == 0){ //Retorna 2 se for master
-        return 2;
-      }
-      return 1;  // Retorna 1 para usuarios cadastrados
-    }
-  }
-  return 0;     // Retorna 0 caso não encontre ninguem
-}
 
 void checkCardToOpen(String tag){
-  int r = checkAuth(tag);
-  if(r == 1 || r == 2){
-    msg("PORTAO ABERTO: " + tag);
-    openDoor();
-    return;
-  }
-  buzzer(2);
-}
-
-void api_command(String json){
-  #ifdef DEBUG
-    Serial.println(json);
-  #endif
-  DeserializationError error = deserializeJson(doc, json);
-  if (error) {
-    Serial.print(F("deserializeJson() failed: "));
-    Serial.println(error.c_str());
-    return;
-  }
-  String pin_test = doc["password"].as<String>();
-  pin_test.trim();
-  if(!PIN.equals(pin_test)){
-    #ifdef DEBUG
-      Serial.println(doc["password"].as<String>());
-    #endif
-    msg("[API]: Senha invalida");
-    return;
-  }
-  
-  #ifdef DEBUG
-    Serial.println("[API]: Senha aceita");
-    Serial.println("[API]: Comando recebido: ");
-    const char* r = doc["command"];
-    Serial.println(r);
-  #endif
-  if(doc["command"].as<String>().equals("add_new_user")){
-    addNewUser(false, doc["user"]);
-  }
+    solicitarAbertura(tag);
 }
 
 void checkCommand(String mensagem) {
   if (!mensagem.equals("")) {
     mensagem.trim();
-    StringSplitter *split;
-    if(mensagem.substring(0, mensagem.indexOf(" ")).equals("login")){                                     // Usuário faz login no sistema para conseguir modificar configurações
-      mensagem.toLowerCase();
-      String s1 = mensagem.substring(mensagem.indexOf(" "));
-      s1.trim();
-      login(s1);
-      return;
-    } else if (mensagem.substring(0, mensagem.indexOf(" ")).equals("open_door")) {                        // Abre o portão caso o pin esteja correto.
-        String s1 = mensagem.substring(mensagem.indexOf(" "));
-        s1.trim(); s1.toUpperCase();
-        if(s1.equals("")){
-          msg("Senha de root para abrir. [open_door <pin>]");
-          return;
-        }
-        if(s1.equals(PIN)){
-          openDoor();
-        } else {
-          msg("PIN incorreto.");
-        }
-        return;
-    } else if(mensagem.substring(0, mensagem.indexOf(" ")).equals("api")){
-      String json = mensagem.substring(mensagem.indexOf(" "));
-      json.trim();
-      if(!json.equals("")){
-        api_command(json);
-      }
-      return;
-    }
-    if(_root){                                                                                // Verifica se o usuario do sistema entrou, caso aconteca, pode alterar as configurações do sistema. 
-      if (mensagem.equals("add_new_user master")) {                                                // Adiciona um novo usuário/cartão no sistema.
-        addNewUser(true, "master");
-      } else if (mensagem.substring(0, mensagem.indexOf(" ")).equals("add_new_user")) {
-        String s1 = mensagem.substring(mensagem.indexOf(" "));
-        s1.trim(); s1.toUpperCase();
-        addNewUser(false, s1);
-      } else if (mensagem.substring(0, mensagem.indexOf(" ")).equals("change_wifi")) {
-        mensagem.replace("change_wifi", "");
-        split = new StringSplitter(mensagem, ',', 2);
-        String ssid = split->getItemAtIndex(0);
-        ssid.trim();
-        String pass = split->getItemAtIndex(1);
-        pass.trim();
-        changeWifi(ssid, pass);
-      } else if (mensagem.substring(0, mensagem.indexOf(" ")).equals("list_user")) {
-        listUser();
-      } else if (mensagem.substring(0, mensagem.indexOf(" ")).equals("remove_user")) {
-        split = new StringSplitter(mensagem, ' ', 2);
-        String tag = split->getItemAtIndex(1);
-        tag.trim();
-        removeUser(tag);
-      }/* else if (mensagem.substring(0, mensagem.indexOf(" ")).equals("only_master")) {
-        String s1 = mensagem.substring(mensagem.indexOf(" "));
-        s1.trim();
-        s1.equals("enable") ? __only_master = true : __only_master = false;
-        if (__only_master) msg("Sistema com acesso permitido apenas para master");
-        else ("Sistema liberado para todos");
-      }*/ else if (mensagem.substring(0, mensagem.indexOf(" ")).equals("restart")) {
-        restartEsp();
-      } else if (mensagem.substring(0, mensagem.indexOf(" ")).equals("change_pin")) {
-        split = new StringSplitter(mensagem, ' ', 2);
-        String pin = split->getItemAtIndex(1);
-        pin.trim();
-        changePin(pin);
-      } else if (mensagem.substring(0, mensagem.indexOf(" ")).equals("logout")) {
-        logout();
-      } else if (mensagem.substring(0, mensagem.indexOf(" ")).equals("clear_eeprom")) {
-        clearEEPROM();
-      } else {
-        msg("Erro command [cmd: " + mensagem + "]");
-      }
-    } else {
-      msg("Entre como root para mudar/ver configuração.");
-    }
+    openDoor();
   }
 }
