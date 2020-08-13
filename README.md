@@ -4,14 +4,12 @@
 
 ```
 {
+  "id_device": "esp8266",
   "network": {
     "wifi": ["SSID", "SENHA"],
-    "mqtt": {
+    "websocket": {
       "server": "IP",
-      "user": "USUARIO",
-      "password": "SENHA",
-      "port": "PORTA",
-      "topic": "TOPIC"
+      "port": "PORTA"
     }
   },
   "system": {
