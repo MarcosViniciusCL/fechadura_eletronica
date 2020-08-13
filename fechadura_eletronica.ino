@@ -9,52 +9,37 @@
 #include <MFRC522.h>
 #include <ESP8266WiFi.h>
 #include <ESP8266WiFiMulti.h>
-#include <PubSubClient.h>
-#include <StringSplitter.h>
+
 #include <FS.h>
 #include <ArduinoOTA.h>
 #include <ArduinoJson.h>
 #include <NTPClient.h>
 #include <WiFiUdp.h>
-//#include <AESLib.h>
 
-#define PIN_OFFSET 0
-#define DATA_OFFSET 5
+#include <ArduinoWebsockets.h>
 
 
-#ifndef STASSID
-//#define STASSID "Cavalo de Troia.exe";
-#define STASSID "NOTE";
-#define STAPSK  "@n3tworking";
-#endif
-
+String id_device = "";
 String ssid;//     = STASSID;
 String password;// = STAPSK;
 
-String server = "www.google.com.br";
-int porta = 80;
 
 
 #define RELE D2
 #define BUZZ D1
 
-#define WAIT_TIME_MQTT 15                     // Tempo de tentativa de conexao do mqtt em segundos
+#define WAIT_TIME_WEBSOCKET 5                     // Tempo de tentativa de conexao do mqtt em segundos
 #define WAIT_TIME_WIFI 10                     // Tempo de tentativa de conexao do wifi em segundos
 #define CHECK_TIME 9                          // Tempo entre cada verificação de conexao, em segundos
 
-unsigned char MQTT_ENABLE = 1;
+using namespace websockets;
 
-#define VECTOR_SIZE_MAX 3
-String secure_card[VECTOR_SIZE_MAX+1][2];
-int INDEX_ROOT = VECTOR_SIZE_MAX + 1;
 
 String PIN = "";
 
 MFRC522 rfid(SS_PIN, RST_PIN);
 MFRC522::MIFARE_Key key; 
 
-WiFiClient espClient;
-PubSubClient client(espClient);
 
 //StaticJsonDocument<1024> doc;
 DynamicJsonDocument doc(2048);
@@ -62,7 +47,11 @@ DynamicJsonDocument doc(2048);
 WiFiUDP ntpUDP;
 NTPClient timeClient(ntpUDP, "a.st1.ntp.br", -3 * 3600, 60000);
 
-char _mqtt_conectado = 0;
+WebsocketsClient clientWebSocket;
+
+String last_tag = "";
+
+char _websocket_conectado = 0;
 char _wifi_conectado = 0;
 unsigned long mqtt_time_prev = 0;
 unsigned long wifi_time_prev = 0;
@@ -71,53 +60,15 @@ unsigned long check_time_prev = 0;
 
 typedef struct m {                                          // Estrutuda de dados para salvar as configurações do servidor mqtt
   String server;
-  String user;
-  String password;
   int port;
-  String subTopic;
-} conf_mqtt;
+} conf_websocket;
 
-conf_mqtt mqtt;
-uint8_t GPIO_Pin = D2;
+conf_websocket websocket;
+
 
 void setup() {
     initESP();
-  /* ###### VARIAVEIS DO SISTEMA ########## 
-  //secure_card[INDEX_ROOT][0] = "1234";
-
-  delay(3000);*/
-
-}
-
-void loop() {
-  if(_wifi_conectado != 1){
-    conectar_wifi();
-  } 
-  if(_mqtt_conectado == 0){
-    connect_mqtt();
-  }
-  client.loop();
-  
-  
-  String v = lerRFID();
-  if(!v.equals("")){
-    msg("V: " + v);
-    checkCardToOpen(v);
-  }
-  verif_conexao();
-  timeClient.update();
-
-  
-  /* 
-  //timeClient.update();
-  
-  if (Serial.available() > 0) {
-    String m = Serial.readString();
-    checkCommand(m);
-  }
-  ArduinoOTA.handle();
-  */
-  delay(50);
+    delay(3000);
 }
 
 void initESP(){
@@ -167,23 +118,24 @@ void initESP(){
                 }
             }
             // Exibindo os dados enviado para o usuario aceitar.
+            auto id = doc["id_device"].as<char*>();
+
             auto ssid = doc["network"]["wifi"][0].as<char*>();
             auto wifi_password = doc["network"]["wifi"][1].as<char*>();
 
-            auto mqtt_server = doc["network"]["mqtt"]["server"].as<char*>();
-            auto mqtt_user = doc["network"]["mqtt"]["user"].as<char*>();
-            auto mqtt_password = doc["network"]["mqtt"]["password"].as<char*>();
-            auto mqtt_port = doc["network"]["mqtt"]["port"].as<int>();
-            auto mqtt_topic = doc["network"]["mqtt"]["topic"].as<char*>();
+            auto websocket_server = doc["network"]["websocket"]["server"].as<char*>();
+            auto websocket_port = doc["network"]["websocket"]["port"].as<char*>();
+            
 
             auto pin = doc["system"]["password"].as<char*>();
 
             Serial.println("\n\n**********************");
+            Serial.println("ID DEVICE: " + String(id));
             Serial.println("NETWORK:");
             Serial.println("ssid: " + String(ssid) + "\nsenha: " + String(wifi_password));
-            Serial.println("MQTT:");
-            Serial.println("server: " + String(mqtt_server) + "\nuser: " + String(mqtt_user) + "\npassword: " + String(mqtt_password) + "\nport: " + String(mqtt_port) + "\ntopic: " + String(mqtt_topic));
-            Serial.println("SYSTEM:");
+            Serial.println("\nWEBSOCKET:");
+            Serial.println("server: " + String(websocket_server) + "\nport: " + String(websocket_port));
+            Serial.println("\nSYSTEM:");
             Serial.println("password: " + String(pin));
             Serial.println("**********************\n\n");
     
@@ -218,15 +170,13 @@ void initESP(){
     Serial.println("Carregando configuracoes...");
     upConfig();
 
-    Serial.println("Configurando modo de trabalho do wifi...");
+    Serial.println("Configurando modo de trabalho do WIFI...");
     // ###### WiFi CONFIG ######### 
     WiFi.mode(WIFI_STA);
 
-    Serial.println("Configurando dados MQTT...");
+    Serial.println("Configurando dados WEBSOCKET...");
 
     // ###### MQTT CONFIG ######### 
-    client.setServer(mqtt.server.c_str(), mqtt.port);
-    client.setCallback(callback);
 
     Serial.println("Iniciando cliente NTP...");
     timeClient.begin();
@@ -266,17 +216,16 @@ void upConfig(){
     //auto wifi_password = doc["network"]["wifi"][1].as<char*>();
 
     // ###### MQTT CONFIG ######### 
-    mqtt.server = String(doc["network"]["mqtt"]["server"].as<char*>());
-    mqtt.user = String(doc["network"]["mqtt"]["user"].as<char*>());
-    mqtt.password = String(doc["network"]["mqtt"]["password"].as<char*>());
-    mqtt.port = doc["network"]["mqtt"]["port"].as<int>();
-    mqtt.subTopic = doc["network"]["mqtt"]["topic"].as<char*>();
+    websocket.server = String(doc["network"]["websocket"]["server"].as<char*>());
+    websocket.port = doc["network"]["websocket"]["port"].as<int>();
 
     PIN = doc["system"]["password"].as<char*>();
+    id_device = String(doc["id_device"].as<char*>());
 }
 
 void publicar(String msg){
-    client.publish((mqtt.subTopic + "/output").c_str(), msg.c_str());
+    //client.publish((mqtt.subTopic + "/output").c_str(), msg.c_str());
+    clientWebSocket.send(msg.c_str());
 }
 
 
@@ -317,62 +266,49 @@ String lerRFID(){
   return "";
 } 
 
-void openDoor(){
-  buzzer(1);
-  digitalWrite(RELE, LOW);
-  delay(500);
-  digitalWrite(RELE, HIGH);
-  msg("Publicando...");
-  publicar("Aberto");
-}
 
-void callback(char* topic, byte* payload, unsigned int length) {
-  String m = "";
-  for (int i = 0; i < length; i++) {
-    m += (char)payload[i];
-  }
-  msg(m);
-  checkCommand(m);
+void abrir_porta(){
+    buzzer(500, 1);
+    digitalWrite(RELE, LOW);
+    delay(500);
+    digitalWrite(RELE, HIGH);
+    msg("Publicando...");
+    publicar("Aberto");
 }
 
 
 
-void connect_mqtt() {
-    if (MQTT_ENABLE && _wifi_conectado){
-        if(abs((millis() - mqtt_time_prev)) >= (WAIT_TIME_MQTT*1000)){
-            mqtt_time_prev = millis();
-            if(!client.connected()){
-                msg("MQTT: CONECTANDO... [" + mqtt.server + ":" + mqtt.port + "]");
-                String clientId = "ESP8266Client-";
-                clientId += String(random(0xffff), HEX);
-                int r = client.connect(clientId.c_str(), mqtt.user.c_str(), mqtt.password.c_str());
-                //Serial.println(r ? "MQTT: FALHOU" : "MQTT: CONECTADO");
-                if (r) {
-                    client.publish((mqtt.subTopic + "/output").c_str(), "hello world");
-                    client.subscribe(mqtt.subTopic.c_str());
-                    _mqtt_conectado = 1;
-                }
-            }
+long int websocket_time_prev = 0;
+void connect_websocket(){
+    if ((millis() - websocket_time_prev) > WAIT_TIME_WEBSOCKET*1000 && _wifi_conectado){
+        websocket_time_prev = millis();
+        msg("WEBSOCKET: CONETANDO... [" + websocket.server + ":" + websocket.port + "]");
+        // Tentamos conectar com o websockets server
+        bool connected = clientWebSocket.connect(websocket.server.c_str(), websocket.port , "/");
+    
+        // Se foi possível conectar
+        if(connected) {
+            // Exibimos mensagem de sucesso
+            msg("WEBSOCKET: CONECTADO");
+            _websocket_conectado = 1;
+            // Enviamos uma msg "Hello Server" para o servidor
+            clientWebSocket.send("{\"id_device\":\"" + id_device + "\",\"msg\":\"hello server\"}");
+        }   // Se não foi possível conectar
+        else {
+            // Exibimos mensagem de falha
+            msg("WEBSOCKET: NÃO CONECTADO");
+            _websocket_conectado = 0;
+            return;
         }
+        // Iniciamos o callback onde as mesagens serão recebidas
+        clientWebSocket.onMessage(callback_websocket);
     }
 }
 
-
-void mostrarErroMqtt(int err){
-    switch (err) {
-        case MQTT_CONNECTION_TIMEOUT: msg("MQTT: SEM RESPOSTA"); break;
-        case MQTT_CONNECTION_LOST: msg("MQTT: CONEXAO PERDIDA"); break;
-        case MQTT_CONNECT_FAILED: msg("MQTT: CONEXAO FALHOU"); break;
-        case MQTT_DISCONNECTED: msg("MQTT: DISCONECTADO."); break;
-        case MQTT_CONNECTED: msg("MQTT: CONECTADO"); break;
-        case MQTT_CONNECT_BAD_PROTOCOL: msg("MQTT: O SERVIDOR NAO SUPORTA VERSAO MQTT"); break;
-        case MQTT_CONNECT_BAD_CLIENT_ID: msg("MQTT: SERVIDOR REJEITOU O ID DO CLIENTE"); break;
-        case MQTT_CONNECT_UNAVAILABLE: msg("MQTT: SERVIDOR NAO DISPONIVEL PARA CONEXAO"); break;
-        case MQTT_CONNECT_BAD_CREDENTIALS: msg("MQTT: EMAIL OU SENHA ERRADO"); break;
-        case MQTT_CONNECT_UNAUTHORIZED: msg("MQTT: CLIENTE NAO AUTORIZADO"); break;
-        default: break;
-    }
-
+void callback_websocket(WebsocketsMessage message){
+    // Exibimos a mensagem recebida na serial
+    // msg(message.data());
+    checkCommand(message.data());
 }
 
 void conectar_wifi(){
@@ -393,11 +329,11 @@ void verif_conexao(){
   if((millis() - check_time_prev) >= (CHECK_TIME*1000)){
     check_time_prev = millis();
     _wifi_conectado = (WiFi.status() == WL_CONNECTED) ? 1 : 0;      // Verifica se tem conexão com a internet
-    int mqtt_state = client.state();
-    _mqtt_conectado = (mqtt_state == 0) ? 1 : 0;                 // Verifica se o MQTT ta conectado
-    if (client.state() != 0) {
-        mostrarErroMqtt(client.state());
-    }
+    //int mqtt_state = client.state();
+    //_mqtt_conectado = (mqtt_state == 0) ? 1 : 0;                 // Verifica se o MQTT ta conectado
+    //if (client.state() != 0 && _wifi_conectado) {
+    //    mostrarErroMqtt(client.state());
+    //}
   }
 }
 
@@ -410,18 +346,28 @@ String diasHoras(){
     return  (_wifi_conectado) ? dias[timeClient.getDay()] + ", " + timeClient.getFormattedTime() : "S/H";
 }
 
-void buzzer(int i){
-  int q;
-  for(q=0; q < i; q++){
-    digitalWrite(BUZZ, HIGH);
-    delay(100);
-    digitalWrite(BUZZ, LOW);
-    delay(100);
-  }
+
+long int tempo_buzzer = 0;
+long int vezes_buzzer = 0;
+long int tempo_buzzer_on = 0;
+void buzzer_loop(){
+    if(millis() - tempo_buzzer_on > tempo_buzzer){
+        tempo_buzzer_on = millis();
+        if(vezes_buzzer > 0) {
+            digitalWrite(BUZZ, HIGH);
+            vezes_buzzer--;
+        } else {
+            digitalWrite(BUZZ, LOW);
+        }
+    }
+}
+void buzzer(long int ms, int q){
+    tempo_buzzer = ms;
+    vezes_buzzer = q;
 }
 
 void solicitarAbertura(String tag){
-    String msg = "{\"type\":\"question\",\"timestamp\":\"" + diasHoras() + "\",\"data\":{\"cmd\":\"open\",\"tag\":\"" + tag + "\"}}";
+    String msg = " {\"type\":\"question\",\"timestamp\":\"" + String(millis()) + "\",\"data\":{\"cmd\":\"open\",\"tag\":\"" + tag + "\"}}";
     publicar(msg);
 }
 /* ################################### CONFIGURAÇÃO DO SISTEMA E USUARIOS ##########################################*/
@@ -435,72 +381,66 @@ void clearEEPROM() {
   msg("Limpeza concluída.");
 }
 
-
-
 void restartEsp() {
   msg("Reiniciando sistema...");
   ESP.restart();
 }
 
-void addNewUser(bool master, String user) {
-  bool _add = true;
-  String tagAtual;
-  msg("NOVO CARTAO: INICIADO..");
-  buzzer(1);
-  int time_out = 0;                       // Tempo para aguardar enquanto não for inserido um novo cartão, se passar cancela a operação.
-  int i = 0;
-  do {
-    tagAtual = lerRFID();              // Pega o cartão aproximado
-    time_out++;
-    if (time_out >= 40) {
-      buzzer(2);
-      msg("NOVO CARTAO: CANCELADO");
-      return;
-    }
-    delay(250);
-  } while (tagAtual.equals(""));
-  if (master) {                                                                       // Se master for true, ele adiciona um novo master card
-    secure_card[0][0] = tagAtual;
-    if (user != NULL && !user.equals("")) {
-      secure_card[0][1] = user;
-    } else {
-      secure_card[0][1] = "S/N";
-    }
-    msg("NOVO CARTAO: ADICIONADO[" + tagAtual+"]");
-    buzzer(1);
-  } else {
-    for (i = 0; i < VECTOR_SIZE_MAX; i++) {                                           // Verifica se o cartão ja existe
-      if (secure_card[i][0].equals(tagAtual)) { 
-        msg("NOVO CARTAO: ERRO, CARTAO JA EXISTE.");
-        buzzer(2);
-        return;
-      }
-    }
-    for (i = 1; i < VECTOR_SIZE_MAX; i++) {                                           // Verifica onde tem um espaço vazio para colocar um novo cartão, ignorando o primeiro
-      if (secure_card[i][0].equals("")) {
-        secure_card[i][0] = tagAtual;
-        if (user != NULL && !user.equals("")) {
-          secure_card[i][1] = user;
-        } else {
-          secure_card[i][1] = "S/N";
-        }
-        msg("NOVO CARTAO: ADICIONADO[" + tagAtual+"]");
-        buzzer(1);
-        break;
-      }
-    }
-  }
-  buzzer(1);
-}
-
-
 void checkCardToOpen(String tag){
+    last_tag = tag;
     solicitarAbertura(tag);
 }
 
 void checkCommand(String mensagem) {
   if (!mensagem.equals("")) {
     mensagem.trim();
-    openDoor();
+    DeserializationError err = deserializeJson(doc, mensagem);
+    if (err) {
+        publicar("deserializeJson() failed with code " + String(err.c_str()));
+        return;
+    }
+    /* Verifica se a mensagem recebida do servidor já tem mais de 10 segundos. 
+    * Caso esteja antiga, a mensagem é descartada. Obs: Apenas para mensagem de resposta.
+    */
+    if (String(doc["type"].as<char*>()).equals("response") && (millis() - doc["timestamp"].as<long int>() > 10000)){
+        publicar("Pacote ignorado por demora na resposta.");
+        return;
+    }
+    /* Abrir portao caso a solicitação de abertura tenha sido enviada para o servidor 
+    * Vai ser verificado se é uma resposta do servidor e se a tag corresponde a anterior
+    */ 
+    if(String(doc["type"].as<char*>()).equals("response") && String(doc["data"]["tag"].as<char*>()).equals(last_tag) && String(doc["data"]["cmd"].as<char*>()).equals("open")){
+        abrir_porta();
+    }
+    if(String(doc["type"].as<char*>()).equals("response") && String(doc["data"]["tag"].as<char*>()).equals(last_tag) && String(doc["data"]["cmd"].as<char*>()).equals("close")){
+        buzzer(500, 3);
+    }
+    if (String(doc["type"].as<char*>()).equals("ping")) {
+        clientWebSocket.send("{\"id_device\":\""+ id_device +"\",\"type\":\"pong\"}");
+    }
   }
+}
+
+long int time_loop = 0;
+
+void loop() {
+    delay(100);
+    
+    if(_wifi_conectado != 1){
+        conectar_wifi();
+    }
+
+    if (!clientWebSocket.available()) {
+        connect_websocket();
+    }
+    
+    String v = lerRFID();
+    if(!v.equals("")){
+        msg("V: " + v);
+        checkCardToOpen(v);
+    }
+    verif_conexao();
+    timeClient.update();
+    clientWebSocket.poll();
+    buzzer_loop();
 }
