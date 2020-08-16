@@ -65,10 +65,18 @@ typedef struct m {                                          // Estrutuda de dado
 
 conf_websocket websocket;
 
+typedef struct n {
+    String tag;
+    long int timestamp;
+} last_done;
+
+last_done tag_done;
+
 
 void setup() {
     initESP();
     delay(3000);
+    buzzer_done();
 }
 
 void initESP(){
@@ -268,7 +276,7 @@ String lerRFID(){
 
 
 void abrir_porta(){
-    buzzer(500, 1);
+    buzzer_done();
     digitalWrite(RELE, LOW);
     delay(500);
     digitalWrite(RELE, HIGH);
@@ -307,7 +315,7 @@ void connect_websocket(){
 
 void callback_websocket(WebsocketsMessage message){
     // Exibimos a mensagem recebida na serial
-    // msg(message.data());
+    msg(message.data());
     checkCommand(message.data());
 }
 
@@ -351,20 +359,39 @@ long int tempo_buzzer = 0;
 long int vezes_buzzer = 0;
 long int tempo_buzzer_on = 0;
 void buzzer_loop(){
-    if(millis() - tempo_buzzer_on > tempo_buzzer){
+    if(millis() - tempo_buzzer_on > 1500){
         tempo_buzzer_on = millis();
-        if(vezes_buzzer > 0) {
+        if(!_wifi_conectado || !_websocket_conectado){
             digitalWrite(BUZZ, HIGH);
-            vezes_buzzer--;
+            delay(50);
+            digitalWrite(BUZZ, LOW);
         } else {
             digitalWrite(BUZZ, LOW);
         }
+        
     }
 }
 void buzzer(long int ms, int q){
     tempo_buzzer = ms;
     vezes_buzzer = q;
 }
+
+void buzzer_done(){
+    digitalWrite(BUZZ, HIGH);
+    delay(50);
+    digitalWrite(BUZZ, LOW);
+    delay(100);
+    digitalWrite(BUZZ, HIGH);
+    delay(50);
+    digitalWrite(BUZZ, LOW);
+}
+
+void buzzer_error(){
+    digitalWrite(BUZZ, HIGH);
+    delay(250);
+    digitalWrite(BUZZ, LOW);
+}
+
 
 void solicitarAbertura(String tag){
     String msg = " {\"type\":\"question\",\"timestamp\":\"" + String(millis()) + "\",\"data\":{\"cmd\":\"open\",\"tag\":\"" + tag + "\"}}";
@@ -410,10 +437,19 @@ void checkCommand(String mensagem) {
     * Vai ser verificado se é uma resposta do servidor e se a tag corresponde a anterior
     */ 
     if(String(doc["type"].as<char*>()).equals("response") && String(doc["data"]["tag"].as<char*>()).equals(last_tag) && String(doc["data"]["cmd"].as<char*>()).equals("open")){
+        if (tag_done.tag.equals(last_tag) && millis() - tag_done.timestamp < 2000) {
+            publicar("Mensagem duplicada");
+            return;
+        }
+        tag_done.tag = last_tag;
+        tag_done.timestamp = millis();
         abrir_porta();
     }
     if(String(doc["type"].as<char*>()).equals("response") && String(doc["data"]["tag"].as<char*>()).equals(last_tag) && String(doc["data"]["cmd"].as<char*>()).equals("close")){
-        buzzer(500, 3);
+        buzzer_error();
+    }
+    if(String(doc["type"].as<char*>()).equals("command") && String(doc["data"]["cmd"].as<char*>()).equals("open")){
+        abrir_porta();
     }
     if (String(doc["type"].as<char*>()).equals("ping")) {
         clientWebSocket.send("{\"id_device\":\""+ id_device +"\",\"type\":\"pong\"}");
